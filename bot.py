@@ -80,8 +80,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ========== ИСПРАВЛЕННАЯ СТРОКА 37 ==========
+# ========== КРИТИЧЕСКИ ВАЖНО: Токен должен быть в переменных окружения ==========
 TOKEN = os.environ.get("BOT_TOKEN")
+if not TOKEN:
+    logger.error("BOT_TOKEN не установлен в переменных окружения!")
+    sys.exit("❌ Ошибка: BOT_TOKEN не найден. Установите его в Render Dashboard")
 
 # ID администратора
 ADMIN_ID = 8281804228
@@ -145,7 +148,6 @@ def get_check_result_inline_keyboard(username):
     return InlineKeyboardMarkup(keyboard)
 
 # ========== ИЗМЕНЕНИЕ: УПРОЩЕННЫЕ КЛАВИАТУРЫ ==========
-# Функция для создания ReplyKeyboardMarkup для обычных пользователей (БЕЗ кнопок при добавлении в чат)
 def get_main_reply_keyboard(user_id=None, chat_type="private"):
     """Создает клавиатуру в зависимости от типа чата"""
     
@@ -209,7 +211,6 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     f"💡 Совет: Используйте бота в личных сообщениях для полного функционала!"
                 )
                 
-                # Отправляем приветствие БЕЗ клавиатуры или с минимальной
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text=welcome_message,
@@ -243,7 +244,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• База для слива скамеров"
     )
     
-    # В зависимости от типа чата показываем разную клавиатуру
     try:
         await update.message.reply_photo(
             photo=PHOTO_START,
@@ -257,7 +257,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_welcome_inline_keyboard()
         )
     
-    # Клавиатура в зависимости от типа чата
     if chat_type == "private":
         if user.id == ADMIN_ID:
             await update.message.reply_text(
@@ -270,22 +269,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_main_reply_keyboard(user.id, chat_type)
             )
     else:
-        # В группе показываем только команды
         await update.message.reply_text(
             "Используйте команды для работы с ботом: /check, /me, /help",
             reply_markup=get_main_reply_keyboard(chat_type=chat_type)
         )
 
-# Обработчик текстовых сообщений для ReplyKeyboardMarkup - ИСПРАВЛЕННАЯ ВЕРСИЯ
+# Обработчик текстовых сообщений для ReplyKeyboardMarkup
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         text = update.message.text
         user = update.effective_user
         chat_type = update.effective_chat.type
         
-        # В группах обрабатываем только команды, а не кнопки
+        # В группах обрабатываем только команды
         if chat_type in ["group", "supergroup", "channel"]:
-            # В группах не обрабатываем кнопки клавиатуры
             if text in ["👤 Мой профиль", "⭐ Список гарантов", "🕵️ Слить скамера", 
                        "📋 Команды", "ℹ️ Информация о боте", "🔐 Админ панель"]:
                 await update.message.reply_text(
@@ -296,7 +293,6 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     reply_markup=get_main_reply_keyboard(chat_type=chat_type)
                 )
                 return
-            # Пропускаем остальную обработку кнопок в группах
             return
         
         # Только в личных чатах обрабатываем кнопки
@@ -420,7 +416,6 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
         
         else:
-            # В группах не показываем кнопки навигации
             if chat_type == "private":
                 await update.message.reply_text(
                     "Используйте кнопки ниже для навигации.",
@@ -429,7 +424,6 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     except Exception as e:
         logger.error(f"Ошибка в handle_text_message: {e}")
-        # Безопасная отправка сообщения при ошибке
         try:
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
@@ -693,7 +687,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Ссылка: https://t.me/{username}"
         )
 
-# ========== НОВАЯ КОМАНДА /help ==========
+# Команда /help
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда помощи"""
     help_text = (
@@ -722,7 +716,7 @@ def run_telegram_bot():
         print(f"🌐 Веб-сервер работает на порту {os.environ.get('PORT', 8080)}")
         print(f"👑 Админ ID: {ADMIN_ID}")
         
-        # ========== ДОБАВЛЕНА ПРОВЕРКА ТОКЕНА ==========
+        # Проверка токена
         if not TOKEN:
             print("❌ ОШИБКА: BOT_TOKEN не установлен в Environment Variables!")
             print("💡 На Render Dashboard добавьте переменную BOT_TOKEN")
@@ -732,7 +726,7 @@ def run_telegram_bot():
         # Создаем приложение
         application = Application.builder().token(TOKEN).build()
         
-        # ========== ДОБАВЛЕН ОБРАБОТЧИК СОБЫТИЙ ЧАТА ==========
+        # Добавляем обработчик событий чата
         application.add_handler(ChatMemberHandler(chat_member_update, ChatMemberHandler.CHAT_MEMBER))
         
         # Регистрируем обработчики команд
@@ -759,7 +753,6 @@ def run_telegram_bot():
         
         print("🟢 Telegram бот успешно запущен. Ожидание сообщений...")
         print("🌐 Веб-интерфейс доступен по / и /health")
-        print("💡 Теперь бот не будет показывать кнопки при добавлении в чаты!")
         application.run_polling()
         
     except Exception as e:
