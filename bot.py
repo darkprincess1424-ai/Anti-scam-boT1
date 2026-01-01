@@ -201,7 +201,19 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 reply_markup=get_admin_reply_keyboard()
             )
         else:
-            await update.message.reply_text(
+            async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        # ... ваш код ...
+        if update.message:  # ← ПРОВЕРЯЕМ, ЧТО СООБЩЕНИЕ СУЩЕСТВУЕТ
+            await update.message.reply_text("Текст ответа")
+        else:
+            # Если сообщения нет, отправляем в чат
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Текст ответа"
+            )
+    except Exception as e:
+        print(f"Ошибка при отправке сообщения: {e}")
                 "❌ Эта панель только для администратора!",
                 reply_markup=get_main_reply_keyboard(user.id)
             )
