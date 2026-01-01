@@ -1,10 +1,78 @@
+import os
 import logging
 import sqlite3
 import sys
 from datetime import datetime
+from threading import Thread
+from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 
+# ========== ВЕБ-СЕРВЕР ДЛЯ RENDER ==========
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    """Главная страница для Render"""
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>🤖 Anti-Scam Bot</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                text-align: center;
+                padding: 50px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+            }
+            .container {
+                background: rgba(255,255,255,0.1);
+                padding: 30px;
+                border-radius: 20px;
+                backdrop-filter: blur(10px);
+                max-width: 600px;
+                margin: 0 auto;
+            }
+            h1 { font-size: 2.5em; }
+            .status { 
+                background: #4CAF50; 
+                padding: 10px 20px;
+                border-radius: 50px;
+                display: inline-block;
+                margin: 20px 0;
+                font-weight: bold;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🤖 Anti-Scam Bot</h1>
+            <div class="status">✅ ONLINE</div>
+            <p>Бот работает на Render 24/7</p>
+            <p>Для использования найдите бота в Telegram</p>
+            <p><small>Health check: /health</small></p>
+        </div>
+    </body>
+    </html>
+    """
+
+@web_app.route('/health')
+def health():
+    """Health check для Render"""
+    return jsonify({
+        "status": "healthy", 
+        "service": "anti-scam-bot",
+        "timestamp": datetime.now().isoformat()
+    }), 200
+
+def run_web_server():
+    """Запуск веб-сервера в отдельном потоке"""
+    port = int(os.environ.get("PORT", 8080))
+    web_app.run(host='0.0.0.0', port=port, debug=False)
+
+# ========== ТЕЛЕГРАМ БОТ ==========
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -12,8 +80,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Токен бота
-TOKEN = "8253975192:AAGA10BP7WQZtiBy10aBICmccz20OXux7cw"
+# Получаем токен из переменных окружения Render (или используем запасной)
+TOKEN = os.environ.get("BOT_TOKEN", "8253975192:AAGA10BP7WQZtiBy10aBICmccz20OXux7cw")
 
 # ID администратора
 ADMIN_ID = 8281804228
@@ -136,145 +204,148 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_main_reply_keyboard(user.id)
         )
 
-# Обработчик текстовых сообщений для ReplyKeyboardMarkup
+# Обработчик текстовых сообщений для ReplyKeyboardMarkup - ИСПРАВЛЕННАЯ ВЕРСИЯ
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    user = update.effective_user
-    
-    if text == "👤 Мой профиль":
-        await me_command(update, context)
-    
-    elif text == "⭐ Список гарантов":
-        cursor.execute("SELECT username FROM garants LIMIT 50")
-        garants = cursor.fetchall()
+    try:
+        text = update.message.text
+        user = update.effective_user
         
-        if garants:
-            garants_list = "\n".join([f"⭐ @{g[0]}" for g in garants])
-            response = f"⭐ Список гарантов:\n\n{garants_list}"
-        else:
-            response = "📭 Список гарантов пуст"
+        if text == "👤 Мой профиль":
+            await me_command(update, context)
         
-        await update.message.reply_text(response, reply_markup=get_main_reply_keyboard(user.id))
-    
-    elif text == "🕵️ Слить скамера":
-        await update.message.reply_text(
-            "Для слива скамера перейдите по ссылке:\n"
-            "https://t.me/antiscambaseAS",
-            reply_markup=get_main_reply_keyboard(user.id)
-        )
-    
-    elif text == "📋 Команды":
-        commands_text = (
-            "📋 Доступные команды:\n\n"
-            "/start - Запустить бота\n"
-            "/check @username - Проверить пользователя\n"
-            "/check (в ответ на сообщение) - Проверить отправителя\n"
-            "/me - Проверить свой профиль\n\n"
-            "🕵️‍♂️ Для администраторов:\n"
-            "/add_garant @username - Добавить гаранта\n"
-            "/del_garant @username - Удалить гаранта\n"
-            "/add_scammer @username доказательства - Добавить скамера\n"
-            "/del_scammer @username - Удалить скамера"
-        )
-        await update.message.reply_text(commands_text, reply_markup=get_main_reply_keyboard(user.id))
-    
-    elif text == "ℹ️ Информация о боте":
-        info_text = (
-            "🤖 Anti Scam Bot\n\n"
-            "🔍 Бот для проверки пользователей на скам\n\n"
-            "📊 Возможности:\n"
-            "• Проверка пользователей в базе данных\n"
-            "• База скамеров и гарантов\n"
-            "• История проверок\n"
-            "• Админ-панель для управления\n\n"
-            "⚠️ Важно: Всегда проверяйте информацию!\n\n"
-            "🛠 Разработчик: @SAGYN_OFFICIAL\n"
-            "📅 Версия: 1.0"
-        )
-        await update.message.reply_text(info_text, reply_markup=get_main_reply_keyboard(user.id))
-    
-    elif text == "🔐 Админ панель":
-        if user.id == ADMIN_ID:
+        elif text == "⭐ Список гарантов":
+            cursor.execute("SELECT username FROM garants LIMIT 50")
+            garants = cursor.fetchall()
+            
+            if garants:
+                garants_list = "\n".join([f"⭐ @{g[0]}" for g in garants])
+                response = f"⭐ Список гарантов:\n\n{garants_list}"
+            else:
+                response = "📭 Список гарантов пуст"
+            
+            await update.message.reply_text(response, reply_markup=get_main_reply_keyboard(user.id))
+        
+        elif text == "🕵️ Слить скамера":
             await update.message.reply_text(
-                "👑 Админ панель\n\n"
-                "Используйте кнопки ниже или команды:",
+                "Для слива скамера перейдите по ссылке:\n"
+                "https://t.me/antiscambaseAS",
+                reply_markup=get_main_reply_keyboard(user.id)
+            )
+        
+        elif text == "📋 Команды":
+            commands_text = (
+                "📋 Доступные команды:\n\n"
+                "/start - Запустить бота\n"
+                "/check @username - Проверить пользователя\n"
+                "/check (в ответ на сообщение) - Проверить отправителя\n"
+                "/me - Проверить свой профиль\n\n"
+                "🕵️‍♂️ Для администраторов:\n"
+                "/add_garant @username - Добавить гаранта\n"
+                "/del_garant @username - Удалить гаранта\n"
+                "/add_scammer @username доказательства - Добавить скамера\n"
+                "/del_scammer @username - Удалить скамера"
+            )
+            await update.message.reply_text(commands_text, reply_markup=get_main_reply_keyboard(user.id))
+        
+        elif text == "ℹ️ Информация о боте":
+            info_text = (
+                "🤖 Anti Scam Bot\n\n"
+                "🔍 Бот для проверки пользователей на скам\n\n"
+                "📊 Возможности:\n"
+                "• Проверка пользователей в базе данных\n"
+                "• База скамеров и гарантов\n"
+                "• История проверок\n"
+                "• Админ-панель для управления\n\n"
+                "⚠️ Важно: Всегда проверяйте информацию!\n\n"
+                "🛠 Разработчик: @SAGYN_OFFICIAL\n"
+                "📅 Версия: 2.0 (Render Edition)"
+            )
+            await update.message.reply_text(info_text, reply_markup=get_main_reply_keyboard(user.id))
+        
+        elif text == "🔐 Админ панель":
+            if user.id == ADMIN_ID:
+                await update.message.reply_text(
+                    "👑 Админ панель\n\n"
+                    "Используйте кнопки ниже или команды:",
+                    reply_markup=get_admin_reply_keyboard()
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ Эта панель только для администратора!",
+                    reply_markup=get_main_reply_keyboard(user.id)
+                )
+        
+        elif text == "➕ Добавить гаранта" and user.id == ADMIN_ID:
+            await update.message.reply_text(
+                "Для добавления гаранта используйте команду:\n"
+                "/add_garant @username",
                 reply_markup=get_admin_reply_keyboard()
             )
-        else:
-            async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        # ... ваш код ...
-        if update.message:  # ← ПРОВЕРЯЕМ, ЧТО СООБЩЕНИЕ СУЩЕСТВУЕТ
-            await update.message.reply_text("Текст ответа")
-        else:
-            # Если сообщения нет, отправляем в чат
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="Текст ответа"
+        
+        elif text == "➖ Удалить гаранта" and user.id == ADMIN_ID:
+            await update.message.reply_text(
+                "Для удаления гаранта используйте команду:\n"
+                "/del_garant @username",
+                reply_markup=get_admin_reply_keyboard()
             )
-    except Exception as e:
-        print(f"Ошибка при отправке сообщения: {e}")
-                "❌ Эта панель только для администратора!",
+        
+        elif text == "➕ Добавить скамера" and user.id == ADMIN_ID:
+            await update.message.reply_text(
+                "Для добавления скамера используйте команду:\n"
+                "/add_scammer @username доказательства",
+                reply_markup=get_admin_reply_keyboard()
+            )
+        
+        elif text == "➖ Удалить скамера" and user.id == ADMIN_ID:
+            await update.message.reply_text(
+                "Для удаления скамера используйте команду:\n"
+                "/del_scammer @username",
+                reply_markup=get_admin_reply_keyboard()
+            )
+        
+        elif text == "📊 Статистика" and user.id == ADMIN_ID:
+            cursor.execute("SELECT COUNT(*) FROM scammers")
+            scammer_count = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM garants")
+            garant_count = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM search_history")
+            search_count = cursor.fetchone()[0]
+            
+            stats_text = (
+                f"📊 Статистика бота:\n\n"
+                f"🚨 Скамеров в базе: {scammer_count}\n"
+                f"⭐ Гарантов в базе: {garant_count}\n"
+                f"🔍 Всего проверок: {search_count}\n\n"
+                f"🌐 Хост: Render.com\n"
+                f"🔄 Версия: 2.0"
+            )
+            await update.message.reply_text(stats_text, reply_markup=get_admin_reply_keyboard())
+        
+        elif text == "⬅️ На главную":
+            await update.message.reply_text(
+                "Главное меню:",
+                reply_markup=get_main_reply_keyboard(user.id)
+            )
+        
+        else:
+            await update.message.reply_text(
+                "Используйте кнопки ниже для навигации.",
                 reply_markup=get_main_reply_keyboard(user.id)
             )
     
-    elif text == "➕ Добавить гаранта" and user.id == ADMIN_ID:
-        await update.message.reply_text(
-            "Для добавления гаранта используйте команду:\n"
-            "/add_garant @username",
-            reply_markup=get_admin_reply_keyboard()
-        )
-    
-    elif text == "➖ Удалить гаранта" and user.id == ADMIN_ID:
-        await update.message.reply_text(
-            "Для удаления гаранта используйте команду:\n"
-            "/del_garant @username",
-            reply_markup=get_admin_reply_keyboard()
-        )
-    
-    elif text == "➕ Добавить скамера" and user.id == ADMIN_ID:
-        await update.message.reply_text(
-            "Для добавления скамера используйте команду:\n"
-            "/add_scammer @username доказательства",
-            reply_markup=get_admin_reply_keyboard()
-        )
-    
-    elif text == "➖ Удалить скамера" and user.id == ADMIN_ID:
-        await update.message.reply_text(
-            "Для удаления скамера используйте команду:\n"
-            "/del_scammer @username",
-            reply_markup=get_admin_reply_keyboard()
-        )
-    
-    elif text == "📊 Статистика" and user.id == ADMIN_ID:
-        cursor.execute("SELECT COUNT(*) FROM scammers")
-        scammer_count = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM garants")
-        garant_count = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM search_history")
-        search_count = cursor.fetchone()[0]
-        
-        stats_text = (
-            f"📊 Статистика бота:\n\n"
-            f"🚨 Скамеров в базе: {scammer_count}\n"
-            f"⭐ Гарантов в базе: {garant_count}\n"
-            f"🔍 Всего проверок: {search_count}"
-        )
-        await update.message.reply_text(stats_text, reply_markup=get_admin_reply_keyboard())
-    
-    elif text == "⬅️ На главную":
-        await update.message.reply_text(
-            "Главное меню:",
-            reply_markup=get_main_reply_keyboard(user.id)
-        )
-    
-    else:
-        await update.message.reply_text(
-            "Используйте кнопки ниже для навигации.",
-            reply_markup=get_main_reply_keyboard(user.id)
-        )
+    except Exception as e:
+        logger.error(f"Ошибка в handle_text_message: {e}")
+        # Безопасная отправка сообщения при ошибке
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Произошла ошибка. Попробуйте еще раз.",
+                reply_markup=get_main_reply_keyboard(update.effective_user.id)
+            )
+        except:
+            pass
 
 # Функция для проверки пользователя
 async def check_user(user_id, username, searcher_id):
@@ -530,13 +601,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Ссылка: https://t.me/{username}"
         )
 
-# Основная функция
-def main():
+# Функция для запуска Telegram бота
+def run_telegram_bot():
+    """Запуск Telegram бота"""
     try:
-        print("🤖 Запуск Anti Scam Bot...")
+        print("🤖 Запуск Anti Scam Bot на Render...")
+        print(f"🌐 Веб-сервер работает на порту {os.environ.get('PORT', 8080)}")
         print(f"👑 Админ ID: {ADMIN_ID}")
         
-        # Создаем приложение БЕЗ job_queue
+        if not TOKEN or TOKEN == "ваш_токен_здесь":
+            print("❌ ОШИБКА: BOT_TOKEN не установлен!")
+            print("💡 На Render добавьте переменную BOT_TOKEN в Environment Variables")
+            return
+        
+        # Создаем приложение
         application = Application.builder().token(TOKEN).build()
         
         # Регистрируем обработчики команд
@@ -560,12 +638,28 @@ def main():
             reply_markup=get_main_reply_keyboard(u.effective_user.id)
         )))
         
-        print("🟢 Бот успешно запущен. Ожидание сообщений...")
+        print("🟢 Telegram бот успешно запущен. Ожидание сообщений...")
+        print("🌐 Веб-интерфейс доступен по / и /health")
         application.run_polling()
         
     except Exception as e:
         print(f"🔴 Ошибка при запуске бота: {e}")
         logger.error(f"Ошибка при запуске бота: {e}", exc_info=True)
+
+# ========== ГЛАВНАЯ ФУНКЦИЯ ==========
+def main():
+    """Основная функция запуска"""
+    try:
+        # Запускаем веб-сервер в отдельном потоке
+        web_thread = Thread(target=run_web_server, daemon=True)
+        web_thread.start()
+        print("✅ Веб-сервер запущен для Render")
+        
+        # Запускаем Telegram бота
+        run_telegram_bot()
+        
+    except Exception as e:
+        print(f"🔴 Критическая ошибка: {e}")
         sys.exit(1)
 
 if __name__ == '__main__':
