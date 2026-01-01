@@ -6,7 +6,7 @@ from datetime import datetime
 from threading import Thread
 from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler, ChatMemberHandler
 
 # ========== ВЕБ-СЕРВЕР ДЛЯ RENDER ==========
 web_app = Flask(__name__)
@@ -80,8 +80,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Получаем токен из переменных окружения Render (или используем запасной)
-TOKEN = os.environ.get("BOT_TOKEN", "8253975192:AAGA10BP7WQZtiBy10aBICmccz20OXux7cw")
+# ========== ИСПРАВЛЕННАЯ СТРОКА 37 ==========
+TOKEN = os.environ.get("BOT_TOKEN")
 
 # ID администратора
 ADMIN_ID = 8281804228
@@ -144,16 +144,32 @@ def get_check_result_inline_keyboard(username):
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# Функция для создания ReplyKeyboardMarkup для обычных пользователей
-def get_main_reply_keyboard(user_id=None):
-    keyboard = [
-        ["👤 Мой профиль", "⭐ Список гарантов"],
-        ["🕵️ Слить скамера", "📋 Команды"],
-        ["ℹ️ Информация о боте"]
-    ]
+# ========== ИЗМЕНЕНИЕ: УПРОЩЕННЫЕ КЛАВИАТУРЫ ==========
+# Функция для создания ReplyKeyboardMarkup для обычных пользователей (БЕЗ кнопок при добавлении в чат)
+def get_main_reply_keyboard(user_id=None, chat_type="private"):
+    """Создает клавиатуру в зависимости от типа чата"""
     
-    if user_id == ADMIN_ID:
-        keyboard.append(["🔐 Админ панель"])
+    # Если бота добавили в группу/канал - показываем минимальную клавиатуру
+    if chat_type in ["group", "supergroup", "channel"]:
+        keyboard = [
+            ["/check @username", "/me"],
+            ["/help", "/start"]
+        ]
+    # Личный чат - полная клавиатура
+    elif chat_type == "private":
+        keyboard = [
+            ["👤 Мой профиль", "⭐ Список гарантов"],
+            ["🕵️ Слить скамера", "📋 Команды"],
+            ["ℹ️ Информация о боте"]
+        ]
+        
+        if user_id == ADMIN_ID:
+            keyboard.append(["🔐 Админ панель"])
+    else:
+        # По умолчанию - простые команды
+        keyboard = [
+            ["/help", "/start"]
+        ]
     
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
@@ -166,9 +182,56 @@ def get_admin_reply_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
+# ========== НОВЫЙ ОБРАБОТЧИК: добавление бота в чат ==========
+async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик добавления/удаления бота из чата"""
+    try:
+        chat_member = update.chat_member
+        
+        # Проверяем, был ли бот добавлен в чат
+        if (chat_member.new_chat_member and 
+            chat_member.new_chat_member.user.id == context.bot.id and
+            chat_member.new_chat_member.status == "member"):
+            
+            chat_type = update.effective_chat.type
+            chat_title = update.effective_chat.title or "Чат"
+            
+            # Если бота добавили в группу/супергруппу
+            if chat_type in ["group", "supergroup"]:
+                welcome_message = (
+                    f"🤖 Приветствую в группе «{chat_title}»!\n\n"
+                    f"Я - Anti-Scam Bot, помогу проверить пользователей на скам.\n\n"
+                    f"📌 Основные команды:\n"
+                    f"/check @username - проверить пользователя\n"
+                    f"/check (в ответ на сообщение) - проверить отправителя\n"
+                    f"/me - показать мой профиль\n"
+                    f"/help - справка по командам\n\n"
+                    f"💡 Совет: Используйте бота в личных сообщениях для полного функционала!"
+                )
+                
+                # Отправляем приветствие БЕЗ клавиатуры или с минимальной
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=welcome_message,
+                    reply_markup=get_main_reply_keyboard(chat_type=chat_type)
+                )
+                
+                logger.info(f"Бота добавили в группу: {chat_title}")
+                
+        # Проверяем, был ли бот удален из чата
+        elif (chat_member.old_chat_member and 
+              chat_member.old_chat_member.user.id == context.bot.id and
+              chat_member.new_chat_member.status in ["left", "kicked"]):
+            
+            logger.info(f"Бота удалили из чата: {update.effective_chat.title}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в обработчике chat_member_update: {e}")
+
 # Обработчик команды /start с фото
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    chat_type = update.effective_chat.type
     
     welcome_text = (
         "Добро пожаловать в 𝐀𝐧𝐭𝐢 𝐬𝐜𝐚𝐦 🔍\n\n"
@@ -180,6 +243,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• База для слива скамеров"
     )
     
+    # В зависимости от типа чата показываем разную клавиатуру
     try:
         await update.message.reply_photo(
             photo=PHOTO_START,
@@ -193,15 +257,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_welcome_inline_keyboard()
         )
     
-    if user.id == ADMIN_ID:
-        await update.message.reply_text(
-            "👑 Вы администратор! Доступны специальные команды.",
-            reply_markup=get_admin_reply_keyboard()
-        )
+    # Клавиатура в зависимости от типа чата
+    if chat_type == "private":
+        if user.id == ADMIN_ID:
+            await update.message.reply_text(
+                "👑 Вы администратор! Доступны специальные команды.",
+                reply_markup=get_admin_reply_keyboard()
+            )
+        else:
+            await update.message.reply_text(
+                "Используйте кнопки ниже для навигации:",
+                reply_markup=get_main_reply_keyboard(user.id, chat_type)
+            )
     else:
+        # В группе показываем только команды
         await update.message.reply_text(
-            "Используйте кнопки ниже для навигации:",
-            reply_markup=get_main_reply_keyboard(user.id)
+            "Используйте команды для работы с ботом: /check, /me, /help",
+            reply_markup=get_main_reply_keyboard(chat_type=chat_type)
         )
 
 # Обработчик текстовых сообщений для ReplyKeyboardMarkup - ИСПРАВЛЕННАЯ ВЕРСИЯ
@@ -209,7 +281,25 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         text = update.message.text
         user = update.effective_user
+        chat_type = update.effective_chat.type
         
+        # В группах обрабатываем только команды, а не кнопки
+        if chat_type in ["group", "supergroup", "channel"]:
+            # В группах не обрабатываем кнопки клавиатуры
+            if text in ["👤 Мой профиль", "⭐ Список гарантов", "🕵️ Слить скамера", 
+                       "📋 Команды", "ℹ️ Информация о боте", "🔐 Админ панель"]:
+                await update.message.reply_text(
+                    "⚠️ В групповых чатах используйте команды, а не кнопки:\n"
+                    "/check @username - проверить пользователя\n"
+                    "/me - мой профиль\n"
+                    "/help - справка",
+                    reply_markup=get_main_reply_keyboard(chat_type=chat_type)
+                )
+                return
+            # Пропускаем остальную обработку кнопок в группах
+            return
+        
+        # Только в личных чатах обрабатываем кнопки
         if text == "👤 Мой профиль":
             await me_command(update, context)
         
@@ -223,13 +313,13 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             else:
                 response = "📭 Список гарантов пуст"
             
-            await update.message.reply_text(response, reply_markup=get_main_reply_keyboard(user.id))
+            await update.message.reply_text(response, reply_markup=get_main_reply_keyboard(user.id, chat_type))
         
         elif text == "🕵️ Слить скамера":
             await update.message.reply_text(
                 "Для слива скамера перейдите по ссылке:\n"
                 "https://t.me/antiscambaseAS",
-                reply_markup=get_main_reply_keyboard(user.id)
+                reply_markup=get_main_reply_keyboard(user.id, chat_type)
             )
         
         elif text == "📋 Команды":
@@ -245,7 +335,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "/add_scammer @username доказательства - Добавить скамера\n"
                 "/del_scammer @username - Удалить скамера"
             )
-            await update.message.reply_text(commands_text, reply_markup=get_main_reply_keyboard(user.id))
+            await update.message.reply_text(commands_text, reply_markup=get_main_reply_keyboard(user.id, chat_type))
         
         elif text == "ℹ️ Информация о боте":
             info_text = (
@@ -260,7 +350,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "🛠 Разработчик: @SAGYN_OFFICIAL\n"
                 "📅 Версия: 2.0 (Render Edition)"
             )
-            await update.message.reply_text(info_text, reply_markup=get_main_reply_keyboard(user.id))
+            await update.message.reply_text(info_text, reply_markup=get_main_reply_keyboard(user.id, chat_type))
         
         elif text == "🔐 Админ панель":
             if user.id == ADMIN_ID:
@@ -272,7 +362,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             else:
                 await update.message.reply_text(
                     "❌ Эта панель только для администратора!",
-                    reply_markup=get_main_reply_keyboard(user.id)
+                    reply_markup=get_main_reply_keyboard(user.id, chat_type)
                 )
         
         elif text == "➕ Добавить гаранта" and user.id == ADMIN_ID:
@@ -326,14 +416,16 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         elif text == "⬅️ На главную":
             await update.message.reply_text(
                 "Главное меню:",
-                reply_markup=get_main_reply_keyboard(user.id)
+                reply_markup=get_main_reply_keyboard(user.id, chat_type)
             )
         
         else:
-            await update.message.reply_text(
-                "Используйте кнопки ниже для навигации.",
-                reply_markup=get_main_reply_keyboard(user.id)
-            )
+            # В группах не показываем кнопки навигации
+            if chat_type == "private":
+                await update.message.reply_text(
+                    "Используйте кнопки ниже для навигации.",
+                    reply_markup=get_main_reply_keyboard(user.id, chat_type)
+                )
     
     except Exception as e:
         logger.error(f"Ошибка в handle_text_message: {e}")
@@ -342,7 +434,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text="Произошла ошибка. Попробуйте еще раз.",
-                reply_markup=get_main_reply_keyboard(update.effective_user.id)
+                reply_markup=get_main_reply_keyboard(update.effective_user.id, update.effective_chat.type)
             )
         except:
             pass
@@ -505,7 +597,7 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_info += f"\n👁‍🗨 Вас искали: {result['search_count']} раз\n"
     user_info += f"🗓️ Дата проверки: {current_time}"
     
-    await update.message.reply_text(user_info, reply_markup=get_main_reply_keyboard(user.id))
+    await update.message.reply_text(user_info, reply_markup=get_main_reply_keyboard(user.id, update.effective_chat.type))
 
 # Админ команды
 async def add_garant(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -601,6 +693,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Ссылка: https://t.me/{username}"
         )
 
+# ========== НОВАЯ КОМАНДА /help ==========
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда помощи"""
+    help_text = (
+        "🤖 Anti-Scam Bot - Справка\n\n"
+        "📌 Основные команды:\n"
+        "/start - Начать работу с ботом\n"
+        "/check @username - Проверить пользователя\n"
+        "/check (в ответ на сообщение) - Проверить отправителя\n"
+        "/me - Показать мой профиль\n\n"
+        "ℹ️ В личных сообщениях доступны кнопки меню\n"
+        "💬 В группах используйте команды\n\n"
+        "🛠 Разработчик: @SAGYN_OFFICIAL"
+    )
+    
+    chat_type = update.effective_chat.type
+    await update.message.reply_text(
+        help_text,
+        reply_markup=get_main_reply_keyboard(update.effective_user.id, chat_type)
+    )
+
 # Функция для запуска Telegram бота
 def run_telegram_bot():
     """Запуск Telegram бота"""
@@ -609,18 +722,24 @@ def run_telegram_bot():
         print(f"🌐 Веб-сервер работает на порту {os.environ.get('PORT', 8080)}")
         print(f"👑 Админ ID: {ADMIN_ID}")
         
-        if not TOKEN or TOKEN == "ваш_токен_здесь":
-            print("❌ ОШИБКА: BOT_TOKEN не установлен!")
-            print("💡 На Render добавьте переменную BOT_TOKEN в Environment Variables")
+        # ========== ДОБАВЛЕНА ПРОВЕРКА ТОКЕНА ==========
+        if not TOKEN:
+            print("❌ ОШИБКА: BOT_TOKEN не установлен в Environment Variables!")
+            print("💡 На Render Dashboard добавьте переменную BOT_TOKEN")
+            print("🌐 Перейдите: Render Dashboard → ваш сервис → Environment → Add BOT_TOKEN")
             return
         
         # Создаем приложение
         application = Application.builder().token(TOKEN).build()
         
+        # ========== ДОБАВЛЕН ОБРАБОТЧИК СОБЫТИЙ ЧАТА ==========
+        application.add_handler(ChatMemberHandler(chat_member_update, ChatMemberHandler.CHAT_MEMBER))
+        
         # Регистрируем обработчики команд
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("check", check_command))
         application.add_handler(CommandHandler("me", me_command))
+        application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("add_garant", add_garant))
         application.add_handler(CommandHandler("del_garant", del_garant))
         application.add_handler(CommandHandler("add_scammer", add_scammer))
@@ -634,12 +753,13 @@ def run_telegram_bot():
         
         # Обработчик неизвестных команд
         application.add_handler(MessageHandler(filters.COMMAND, lambda u, c: u.message.reply_text(
-            "❌ Неизвестная команда. Используйте /start для получения списка команд.",
-            reply_markup=get_main_reply_keyboard(u.effective_user.id)
+            "❌ Неизвестная команда. Используйте /start или /help",
+            reply_markup=get_main_reply_keyboard(u.effective_user.id, u.effective_chat.type)
         )))
         
         print("🟢 Telegram бот успешно запущен. Ожидание сообщений...")
         print("🌐 Веб-интерфейс доступен по / и /health")
+        print("💡 Теперь бот не будет показывать кнопки при добавлении в чаты!")
         application.run_polling()
         
     except Exception as e:
