@@ -228,9 +228,7 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     f"Я - Anti-Scam Bot, помогу проверить пользователей на скам.\n\n"
                     f"📌 Основные команды:\n"
                     f"/check @username - проверить пользователя\n"
-                    f"/чек @username - проверить пользователя\n"
                     f"/check (в ответ на сообщение) - проверить отправителя\n"
-                    f"/чек (в ответ на сообщение) - проверить отправителя\n"
                     f"/me - показать мой профиль\n"
                     f"/help - справка по командам\n\n"
                     f"💡 Совет: Используйте бота в личных сообщениях для полного функционала!"
@@ -262,9 +260,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Если вас обманули, вы можете слить скамера в предложку 🕵️\n\n"
         "⚡️ Возможности:\n"
         "• /check @username - проверка пользователя\n"
-        "• /чек @username - проверка пользователя\n"
         "• /check в ответ на сообщение - проверка отправителя\n"
-        "• /чек в ответ на сообщение - проверка отправителя\n"
         "• /me - проверить себя\n"
         "• База для слива скамеров"
     )
@@ -296,7 +292,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         # В группах без кнопок
         await update.message.reply_text(
-            "Используйте команды для работы с ботом: /check, /чек, /me, /help"
+            "Используйте команды для работы с ботом: /check, /me, /help"
         )
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -338,9 +334,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     "📋 Доступные команды:\n\n"
                     "/start - Запустить бота\n"
                     "/check @username - Проверить пользователя\n"
-                    "/чек @username - Проверить пользователя\n"
                     "/check (в ответ на сообщение) - Проверить отправителя\n"
-                    "/чек (в ответ на сообщение) - Проверить отправителя\n"
                     "/me - Проверить свой профиль\n\n"
                     "🕵️‍♂️ Для администраторов:\n"
                     "/add_garant @username - Добавить гаранта\n"
@@ -510,9 +504,7 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Использование:\n"
             "/check @username - проверка пользователя\n"
-            "/чек @username - проверка пользователя\n"
-            "/check в ответ на сообщение - проверка отправителя\n"
-            "/чек в ответ на сообщение - проверка отправителя"
+            "/check в ответ на сообщение - проверка отправителя"
         )
         return
     
@@ -582,10 +574,6 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         await update.message.reply_text(response)
-
-async def chek_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Русская версия команды check"""
-    await check_command(update, context)
 
 async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -715,9 +703,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📌 Основные команды:\n"
         "/start - Начать работу с ботом\n"
         "/check @username - Проверить пользователя\n"
-        "/чек @username - Проверить пользователя\n"
         "/check (в ответ на сообщение) - Проверить отправителя\n"
-        "/чек (в ответ на сообщение) - Проверить отправителя\n"
         "/me - Показать мой профиль\n\n"
         "ℹ️ В личных сообщениях доступны кнопки меню\n"
         "💬 В группах используйте команды\n\n"
@@ -762,7 +748,6 @@ def run_telegram_bot():
         # Регистрируем обработчики команд
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("check", check_command))
-        application.add_handler(CommandHandler("чек", chek_command))
         application.add_handler(CommandHandler("me", me_command))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("add_garant", add_garant))
@@ -793,12 +778,12 @@ def run_telegram_bot():
         print("🟢 Telegram бот успешно запущен. Ожидание сообщений...")
         print("🌐 Веб-интерфейс доступен по / и /health")
         print("🔒 Токен защищен от логирования")
-        print("🔄 Добавлена русская команда /чек")
         
         # Запускаем поллинг
         application.run_polling(
             close_loop=False,
-            stop_signals=None
+            stop_signals=None,
+            drop_pending_updates=True  # Важно: очищаем старые обновления
         )
         
     except Exception as e:
