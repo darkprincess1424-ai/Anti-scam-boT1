@@ -186,10 +186,8 @@ def get_main_reply_keyboard(user_id=None, chat_type="private"):
     """Создает клавиатуру в зависимости от типа чата"""
     
     if chat_type in ["group", "supergroup", "channel"]:
-        keyboard = [
-            ["/check @username", "/me"],
-            ["/help", "/start"]
-        ]
+        # В группах не показываем кнопки
+        return None
     elif chat_type == "private":
         keyboard = [
             ["👤 Мой профиль", "⭐ Список гарантов"],
@@ -199,12 +197,10 @@ def get_main_reply_keyboard(user_id=None, chat_type="private"):
         
         if user_id == ADMIN_ID:
             keyboard.append(["🔐 Админ панель"])
+        
+        return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
     else:
-        keyboard = [
-            ["/help", "/start"]
-        ]
-    
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+        return None
 
 def get_admin_reply_keyboard():
     keyboard = [
@@ -232,16 +228,18 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     f"Я - Anti-Scam Bot, помогу проверить пользователей на скам.\n\n"
                     f"📌 Основные команды:\n"
                     f"/check @username - проверить пользователя\n"
+                    f"/чек @username - проверить пользователя\n"
                     f"/check (в ответ на сообщение) - проверить отправителя\n"
+                    f"/чек (в ответ на сообщение) - проверить отправителя\n"
                     f"/me - показать мой профиль\n"
                     f"/help - справка по командам\n\n"
                     f"💡 Совет: Используйте бота в личных сообщениях для полного функционала!"
                 )
                 
+                # Отправляем без клавиатуры в группах
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text=welcome_message,
-                    reply_markup=get_main_reply_keyboard(chat_type=chat_type)
+                    text=welcome_message
                 )
                 
                 logger.info(f"Бота добавили в группу: {chat_title}")
@@ -264,7 +262,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Если вас обманули, вы можете слить скамера в предложку 🕵️\n\n"
         "⚡️ Возможности:\n"
         "• /check @username - проверка пользователя\n"
+        "• /чек @username - проверка пользователя\n"
         "• /check в ответ на сообщение - проверка отправителя\n"
+        "• /чек в ответ на сообщение - проверка отправителя\n"
         "• /me - проверить себя\n"
         "• База для слива скамеров"
     )
@@ -294,9 +294,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_main_reply_keyboard(user.id, chat_type)
             )
     else:
+        # В группах без кнопок
         await update.message.reply_text(
-            "Используйте команды для работы с ботом: /check, /me, /help",
-            reply_markup=get_main_reply_keyboard(chat_type=chat_type)
+            "Используйте команды для работы с ботом: /check, /чек, /me, /help"
         )
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -305,140 +305,134 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         user = update.effective_user
         chat_type = update.effective_chat.type
         
+        # В группах обрабатываем только команды, не кнопки
         if chat_type in ["group", "supergroup", "channel"]:
-            if text in ["👤 Мой профиль", "⭐ Список гарантов", "🕵️ Слить скамера", 
-                       "📋 Команды", "ℹ️ Информация о боте", "🔐 Админ панель"]:
-                await update.message.reply_text(
-                    "⚠️ В групповых чатах используйте команды, а не кнопки:\n"
-                    "/check @username - проверить пользователя\n"
-                    "/me - мой профиль\n"
-                    "/help - справка",
-                    reply_markup=get_main_reply_keyboard(chat_type=chat_type)
-                )
-                return
+            # В группах не обрабатываем текстовые сообщения как команды
             return
         
-        if text == "👤 Мой профиль":
-            await me_command(update, context)
-        
-        elif text == "⭐ Список гарантов":
-            cursor.execute("SELECT username FROM garants LIMIT 50")
-            garants = cursor.fetchall()
+        if chat_type == "private":
+            if text == "👤 Мой профиль":
+                await me_command(update, context)
             
-            if garants:
-                garants_list = "\n".join([f"⭐ @{g[0]}" for g in garants])
-                response = f"⭐ Список гарантов:\n\n{garants_list}"
-            else:
-                response = "📭 Список гарантов пуст"
+            elif text == "⭐ Список гарантов":
+                cursor.execute("SELECT username FROM garants LIMIT 50")
+                garants = cursor.fetchall()
+                
+                if garants:
+                    garants_list = "\n".join([f"⭐ @{g[0]}" for g in garants])
+                    response = f"⭐ Список гарантов:\n\n{garants_list}"
+                else:
+                    response = "📭 Список гарантов пуст"
+                
+                await update.message.reply_text(response, reply_markup=get_main_reply_keyboard(user.id, chat_type))
             
-            await update.message.reply_text(response, reply_markup=get_main_reply_keyboard(user.id, chat_type))
-        
-        elif text == "🕵️ Слить скамера":
-            await update.message.reply_text(
-                "Для слива скамера перейдите по ссылке:\n"
-                "https://t.me/antiscambaseAS",
-                reply_markup=get_main_reply_keyboard(user.id, chat_type)
-            )
-        
-        elif text == "📋 Команды":
-            commands_text = (
-                "📋 Доступные команды:\n\n"
-                "/start - Запустить бота\n"
-                "/check @username - Проверить пользователя\n"
-                "/check (в ответ на сообщение) - Проверить отправителя\n"
-                "/me - Проверить свой профиль\n\n"
-                "🕵️‍♂️ Для администраторов:\n"
-                "/add_garant @username - Добавить гаранта\n"
-                "/del_garant @username - Удалить гаранта\n"
-                "/add_scammer @username доказательства - Добавить скамера\n"
-                "/del_scammer @username - Удалить скамера"
-            )
-            await update.message.reply_text(commands_text, reply_markup=get_main_reply_keyboard(user.id, chat_type))
-        
-        elif text == "ℹ️ Информация о боте":
-            info_text = (
-                "🤖 Anti Scam Bot\n\n"
-                "🔍 Бот для проверки пользователей на скам\n\n"
-                "📊 Возможности:\n"
-                "• Проверка пользователей в базе данных\n"
-                "• База скамеров и гарантов\n"
-                "• История проверок\n"
-                "• Админ-панель для управления\n\n"
-                "⚠️ Важно: Всегда проверяйте информацию!\n\n"
-                "🛠 Разработчик: @SAGYN_OFFICIAL\n"
-                "📅 Версия: 2.0 (Render Edition)"
-            )
-            await update.message.reply_text(info_text, reply_markup=get_main_reply_keyboard(user.id, chat_type))
-        
-        elif text == "🔐 Админ панель":
-            if user.id == ADMIN_ID:
+            elif text == "🕵️ Слить скамера":
                 await update.message.reply_text(
-                    "👑 Админ панель\n\n"
-                    "Используйте кнопки ниже или команды:",
-                    reply_markup=get_admin_reply_keyboard()
-                )
-            else:
-                await update.message.reply_text(
-                    "❌ Эта панель только для администратора!",
+                    "Для слива скамера перейдите по ссылке:\n"
+                    "https://t.me/antiscambaseAS",
                     reply_markup=get_main_reply_keyboard(user.id, chat_type)
                 )
-        
-        elif text == "➕ Добавить гаранта" and user.id == ADMIN_ID:
-            await update.message.reply_text(
-                "Для добавления гаранта используйте команду:\n"
-                "/add_garant @username",
-                reply_markup=get_admin_reply_keyboard()
-            )
-        
-        elif text == "➖ Удалить гаранта" and user.id == ADMIN_ID:
-            await update.message.reply_text(
-                "Для удаления гаранта используйте команду:\n"
-                "/del_garant @username",
-                reply_markup=get_admin_reply_keyboard()
-            )
-        
-        elif text == "➕ Добавить скамера" and user.id == ADMIN_ID:
-            await update.message.reply_text(
-                "Для добавления скамера используйте команду:\n"
-                "/add_scammer @username доказательства",
-                reply_markup=get_admin_reply_keyboard()
-            )
-        
-        elif text == "➖ Удалить скамера" and user.id == ADMIN_ID:
-            await update.message.reply_text(
-                "Для удаления скамера используйте команду:\n"
-                "/del_scammer @username",
-                reply_markup=get_admin_reply_keyboard()
-            )
-        
-        elif text == "📊 Статистика" and user.id == ADMIN_ID:
-            cursor.execute("SELECT COUNT(*) FROM scammers")
-            scammer_count = cursor.fetchone()[0]
             
-            cursor.execute("SELECT COUNT(*) FROM garants")
-            garant_count = cursor.fetchone()[0]
+            elif text == "📋 Команды":
+                commands_text = (
+                    "📋 Доступные команды:\n\n"
+                    "/start - Запустить бота\n"
+                    "/check @username - Проверить пользователя\n"
+                    "/чек @username - Проверить пользователя\n"
+                    "/check (в ответ на сообщение) - Проверить отправителя\n"
+                    "/чек (в ответ на сообщение) - Проверить отправителя\n"
+                    "/me - Проверить свой профиль\n\n"
+                    "🕵️‍♂️ Для администраторов:\n"
+                    "/add_garant @username - Добавить гаранта\n"
+                    "/del_garant @username - Удалить гаранта\n"
+                    "/add_scammer @username доказательства - Добавить скамера\n"
+                    "/del_scammer @username - Удалить скамера"
+                )
+                await update.message.reply_text(commands_text, reply_markup=get_main_reply_keyboard(user.id, chat_type))
             
-            cursor.execute("SELECT COUNT(*) FROM search_history")
-            search_count = cursor.fetchone()[0]
+            elif text == "ℹ️ Информация о боте":
+                info_text = (
+                    "🤖 Anti Scam Bot\n\n"
+                    "🔍 Бот для проверки пользователей на скам\n\n"
+                    "📊 Возможности:\n"
+                    "• Проверка пользователей в базе данных\n"
+                    "• База скамеров и гарантов\n"
+                    "• История проверок\n"
+                    "• Админ-панель для управления\n\n"
+                    "⚠️ Важно: Всегда проверяйте информацию!\n\n"
+                    "🛠 Разработчик: @SAGYN_OFFICIAL\n"
+                    "📅 Версия: 2.0 (Render Edition)"
+                )
+                await update.message.reply_text(info_text, reply_markup=get_main_reply_keyboard(user.id, chat_type))
             
-            stats_text = (
-                f"📊 Статистика бота:\n\n"
-                f"🚨 Скамеров в базе: {scammer_count}\n"
-                f"⭐ Гарантов в базе: {garant_count}\n"
-                f"🔍 Всего проверок: {search_count}\n\n"
-                f"🌐 Хост: Render.com\n"
-                f"🔄 Версия: 2.0"
-            )
-            await update.message.reply_text(stats_text, reply_markup=get_admin_reply_keyboard())
-        
-        elif text == "⬅️ На главную":
-            await update.message.reply_text(
-                "Главное меню:",
-                reply_markup=get_main_reply_keyboard(user.id, chat_type)
-            )
-        
-        else:
-            if chat_type == "private":
+            elif text == "🔐 Админ панель":
+                if user.id == ADMIN_ID:
+                    await update.message.reply_text(
+                        "👑 Админ панель\n\n"
+                        "Используйте кнопки ниже или команды:",
+                        reply_markup=get_admin_reply_keyboard()
+                    )
+                else:
+                    await update.message.reply_text(
+                        "❌ Эта панель только для администратора!",
+                        reply_markup=get_main_reply_keyboard(user.id, chat_type)
+                    )
+            
+            elif text == "➕ Добавить гаранта" and user.id == ADMIN_ID:
+                await update.message.reply_text(
+                    "Для добавления гаранта используйте команду:\n"
+                    "/add_garant @username",
+                    reply_markup=get_admin_reply_keyboard()
+                )
+            
+            elif text == "➖ Удалить гаранта" and user.id == ADMIN_ID:
+                await update.message.reply_text(
+                    "Для удаления гаранта используйте команду:\n"
+                    "/del_garant @username",
+                    reply_markup=get_admin_reply_keyboard()
+                )
+            
+            elif text == "➕ Добавить скамера" and user.id == ADMIN_ID:
+                await update.message.reply_text(
+                    "Для добавления скамера используйте команду:\n"
+                    "/add_scammer @username доказательства",
+                    reply_markup=get_admin_reply_keyboard()
+                )
+            
+            elif text == "➖ Удалить скамера" and user.id == ADMIN_ID:
+                await update.message.reply_text(
+                    "Для удаления скамера используйте команду:\n"
+                    "/del_scammer @username",
+                    reply_markup=get_admin_reply_keyboard()
+                )
+            
+            elif text == "📊 Статистика" and user.id == ADMIN_ID:
+                cursor.execute("SELECT COUNT(*) FROM scammers")
+                scammer_count = cursor.fetchone()[0]
+                
+                cursor.execute("SELECT COUNT(*) FROM garants")
+                garant_count = cursor.fetchone()[0]
+                
+                cursor.execute("SELECT COUNT(*) FROM search_history")
+                search_count = cursor.fetchone()[0]
+                
+                stats_text = (
+                    f"📊 Статистика бота:\n\n"
+                    f"🚨 Скамеров в базе: {scammer_count}\n"
+                    f"⭐ Гарантов в базе: {garant_count}\n"
+                    f"🔍 Всего проверок: {search_count}\n\n"
+                    f"🌐 Хост: Render.com\n"
+                    f"🔄 Версия: 2.0"
+                )
+                await update.message.reply_text(stats_text, reply_markup=get_admin_reply_keyboard())
+            
+            elif text == "⬅️ На главную":
+                await update.message.reply_text(
+                    "Главное меню:",
+                    reply_markup=get_main_reply_keyboard(user.id, chat_type)
+                )
+            
+            else:
                 await update.message.reply_text(
                     "Используйте кнопки ниже для навигации.",
                     reply_markup=get_main_reply_keyboard(user.id, chat_type)
@@ -516,7 +510,9 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Использование:\n"
             "/check @username - проверка пользователя\n"
-            "/check в ответ на сообщение - проверка отправителя"
+            "/чек @username - проверка пользователя\n"
+            "/check в ответ на сообщение - проверка отправителя\n"
+            "/чек в ответ на сообщение - проверка отправителя"
         )
         return
     
@@ -587,6 +583,10 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(response)
 
+async def chek_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Русская версия команды check"""
+    await check_command(update, context)
+
 async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     result = await check_user(user.id, user.username or f"id{user.id}", user.id)
@@ -610,7 +610,10 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_info += f"\n👁‍🗨 Вас искали: {result['search_count']} раз\n"
     user_info += f"🗓️ Дата проверки: {current_time}"
     
-    await update.message.reply_text(user_info, reply_markup=get_main_reply_keyboard(user.id, update.effective_chat.type))
+    await update.message.reply_text(
+        user_info, 
+        reply_markup=get_main_reply_keyboard(user.id, update.effective_chat.type)
+    )
 
 # Админ команды
 async def add_garant(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -712,7 +715,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📌 Основные команды:\n"
         "/start - Начать работу с ботом\n"
         "/check @username - Проверить пользователя\n"
+        "/чек @username - Проверить пользователя\n"
         "/check (в ответ на сообщение) - Проверить отправителя\n"
+        "/чек (в ответ на сообщение) - Проверить отправителя\n"
         "/me - Показать мой профиль\n\n"
         "ℹ️ В личных сообщениях доступны кнопки меню\n"
         "💬 В группах используйте команды\n\n"
@@ -757,6 +762,7 @@ def run_telegram_bot():
         # Регистрируем обработчики команд
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("check", check_command))
+        application.add_handler(CommandHandler("чек", chek_command))
         application.add_handler(CommandHandler("me", me_command))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("add_garant", add_garant))
@@ -771,14 +777,23 @@ def run_telegram_bot():
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
         
         # Обработчик неизвестных команд
-        application.add_handler(MessageHandler(filters.COMMAND, lambda u, c: u.message.reply_text(
-            "❌ Неизвестная команда. Используйте /start или /help",
-            reply_markup=get_main_reply_keyboard(u.effective_user.id, u.effective_chat.type)
-        )))
+        async def unknown_command(update, context):
+            if update.effective_chat.type in ["group", "supergroup", "channel"]:
+                await update.message.reply_text(
+                    "❌ Неизвестная команда. Используйте /start или /help"
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ Неизвестная команда. Используйте /start или /help",
+                    reply_markup=get_main_reply_keyboard(update.effective_user.id, update.effective_chat.type)
+                )
+        
+        application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
         
         print("🟢 Telegram бот успешно запущен. Ожидание сообщений...")
         print("🌐 Веб-интерфейс доступен по / и /health")
         print("🔒 Токен защищен от логирования")
+        print("🔄 Добавлена русская команда /чек")
         
         # Запускаем поллинг
         application.run_polling(
