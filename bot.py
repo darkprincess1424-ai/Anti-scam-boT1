@@ -551,7 +551,7 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = (
             f"👤 User: @{username}\n"
             f"🤖 Идет проверка в базе...\n"
-            f"📍 ОБНОРУЖЕН СКАМЕР\n\n"
+            f"📍 ОБНАРУЖЕН СКАМЕР\n\n"
             f"Количество скамов: {result['scam_count']}\n\n"
             f"Пруфы на скам ⏬\n"
             f"{result['proofs'] or 'Доказательства не указаны'}\n\n"
