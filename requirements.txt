@@ -1,1 +1,6 @@
-python-telegram-bot==20.3
+Flask>=2.3.0
+requests>=2.31.0
+python-telegram-bot>=20.0  # если используете
+prometheus_client>=0.17.0  # для /metrics endpoint
+psutil>=5.9.0  # для мониторинга ресурсов (опционально)
+gunicorn>=20.1.0  # для продакшн запускаpython-telegram-bot==20.3
