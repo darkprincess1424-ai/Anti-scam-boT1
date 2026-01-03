@@ -2,7 +2,10 @@ import os
 import logging
 import sqlite3
 import sys
+import threading
+import time
 from datetime import datetime
+from flask import Flask, jsonify, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 
@@ -13,6 +16,100 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ========== FLASK ВЕБ-СЕРВЕР ДЛЯ UPTIMEROBOT ==========
+web_app = Flask(__name__)
+
+# Переменная для отслеживания состояния бота
+bot_status = {
+    "status": "running",
+    "started_at": datetime.now().isoformat(),
+    "last_ping": datetime.now().isoformat(),
+    "total_requests": 0
+}
+
+@web_app.route('/')
+def home():
+    """Главная страница для проверки"""
+    bot_status["total_requests"] += 1
+    return jsonify({
+        "status": "online",
+        "service": "anti-scam-bot",
+        "bot_status": bot_status["status"],
+        "uptime": str(datetime.now() - datetime.fromisoformat(bot_status["started_at"])),
+        "requests": bot_status["total_requests"],
+        "timestamp": datetime.now().isoformat()
+    })
+
+@web_app.route('/health')
+def health():
+    """Health check для Render и UptimeRobot"""
+    bot_status["total_requests"] += 1
+    bot_status["last_ping"] = datetime.now().isoformat()
+    
+    return jsonify({
+        "status": "healthy",
+        "service": "anti-scam-bot",
+        "bot": bot_status["status"],
+        "last_ping": bot_status["last_ping"],
+        "timestamp": datetime.now().isoformat(),
+        "message": "🤖 Бот работает нормально"
+    }), 200
+
+@web_app.route('/ping')
+def ping():
+    """Простой ping для UptimeRobot"""
+    bot_status["total_requests"] += 1
+    bot_status["last_ping"] = datetime.now().isoformat()
+    
+    return jsonify({
+        "status": "pong",
+        "timestamp": datetime.now().isoformat()
+    }), 200
+
+@web_app.route('/status')
+def status():
+    """Статус бота"""
+    bot_status["total_requests"] += 1
+    
+    try:
+        conn = sqlite3.connect('bot_database.db', check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM scammers")
+        scammer_count = cursor.fetchone()[0] or 0
+        
+        cursor.execute("SELECT COUNT(*) FROM garants")
+        garant_count = cursor.fetchone()[0] or 0
+        
+        cursor.execute("SELECT COUNT(*) FROM search_history")
+        search_count = cursor.fetchone()[0] or 0
+        
+        conn.close()
+        
+        stats = {
+            "scammers": scammer_count,
+            "garants": garant_count,
+            "searches": search_count
+        }
+    except:
+        stats = {"error": "Не удалось получить статистику"}
+    
+    return jsonify({
+        "status": "online",
+        "bot": bot_status,
+        "database_stats": stats,
+        "timestamp": datetime.now().isoformat()
+    })
+
+def run_web_server():
+    """Запуск веб-сервера в отдельном потоке"""
+    port = int(os.environ.get("PORT", 10000))
+    print(f"🌐 Запуск веб-сервера на порту {port}")
+    print(f"📊 Health check: http://0.0.0.0:{port}/health")
+    print(f"🏓 Ping: http://0.0.0.0:{port}/ping")
+    print(f"📈 Status: http://0.0.0.0:{port}/status")
+    
+    web_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
 # ========== ТЕЛЕГРАМ БОТ ==========
 TOKEN = os.environ.get("BOT_TOKEN")
 if not TOKEN:
@@ -22,7 +119,7 @@ if not TOKEN:
 
 ADMIN_ID = 8281804228
 
-print(f"🚀 Запуск Anti-Scam Bot...")
+print(f"🚀 Запуск Anti-Scam Bot с мониторингом...")
 print(f"👑 Админ ID: {ADMIN_ID}")
 print("✅ Токен бота найден")
 
@@ -61,10 +158,14 @@ CREATE TABLE IF NOT EXISTS search_history (
 conn.commit()
 print("✅ База данных инициализирована")
 
-# File ID для фото (замените на свои)
+# File ID для фото (ЗАМЕНИТЕ ЭТИ ID НА СВОИ!)
+# Как получить File ID: отправьте фото боту, затем используйте команду /getid
 PHOTO_START = "AgACAgIAAxkBAANzaVQoJVrivNUbO_0_kp0vYE7j0yoAAuwSaxsh3qFKzfjQ3DqXYecBAAMCAAN5AAM4BA"
 PHOTO_REGULAR = "AgACAgIAAxkBAANEaVQhuac6f3ohxbrRLsiQyovlv04AArUSaxsh3qFKgpVFnIrVhA0BAAMCAAN5AAM4BA"
 PHOTO_SCAMMER = "AgACAgIAAxkBAAN5aVQoPw9O48N7kKXsxI_oJQ8VECsAAu0Saxsh3qFK3skb3DmGQlkBAAMCAAN5AAM4BA"
+PHOTO_GARANT = "AgACAgIAAxkBAANzaVQoJVrivNUbO_0_kp0vYE7j0yoAAuwSaxsh3qFKzfjQ3DqXYecBAAMCAAN5AAM4BA"  # Фото для гаранта
+PHOTO_USER_PROFILE = "AgACAgIAAxkBAANEaVQhuac6f3ohxbrRLsiQyovlv04AArUSaxsh3qFKgpVFnIrVhA0BAAMCAAN5AAM4BA"  # Фото для профиля пользователя
+PHOTO_USER_SCAMMER = "AgACAgIAAxkBAAN5aVQoPw9O48N7kKXsxI_oJQ8VECsAAu0Saxsh3qFK3skb3DmGQlkBAAMCAAN5AAM4BA"  # Фото для скамера
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def get_welcome_inline_keyboard():
@@ -113,7 +214,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /check @username - проверка пользователя\n"
         "• /check в ответ на сообщение - проверка отправителя\n"
         "• /me - проверить себя\n"
-        "• База для слива скамеров"
+        "• База для слива скамеров\n\n"
+        f"📊 Статус бота: ✅ Онлайн"
     )
     
     try:
@@ -251,32 +353,49 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(response)
 
 async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /me и обработчик кнопки 'Мой профиль' с фото"""
     user = update.effective_user
     result = await check_user(user.id, user.username or f"id{user.id}", user.id)
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
+    # Определяем какое фото показывать
+    if result["type"] == "scammer":
+        profile_photo = PHOTO_USER_SCAMMER
+        status_text = f"СКАМЕР ⚠️\nКоличество скамов: {result['scam_count']}"
+        status_emoji = "⚠️"
+    elif result["type"] == "garant":
+        profile_photo = PHOTO_GARANT
+        status_text = "ГАРАНТ ✅"
+        status_emoji = "✅"
+    else:
+        profile_photo = PHOTO_USER_PROFILE
+        status_text = "ОБЫЧНЫЙ ПОЛЬЗОВАТЕЛЬ"
+        status_emoji = "👤"
+    
     user_info = (
-        f"👤 Ваш профиль:\n"
+        f"👤 {status_emoji} Ваш профиль:\n\n"
         f"🆔 ID: {user.id}\n"
         f"📛 Имя: {user.first_name}\n"
         f"📧 Username: @{user.username or 'Нет'}\n"
-        f"🔍 Статус: "
+        f"🔍 Статус: {status_text}\n\n"
+        f"👁‍🗨 Вас искали: {result['search_count']} раз\n"
+        f"🗓️ Дата проверки: {current_time}"
     )
     
-    if result["type"] == "scammer":
-        user_info += f"СКАМЕР ⚠️\nКоличество скамов: {result['scam_count']}"
-    elif result["type"] == "garant":
-        user_info += "ГАРАНТ ✅"
-    else:
-        user_info += "ОБЫЧНЫЙ ПОЛЬЗОВАТЕЛЬ"
-    
-    user_info += f"\n👁‍🗨 Вас искали: {result['search_count']} раз\n"
-    user_info += f"🗓️ Дата проверки: {current_time}"
-    
-    await update.message.reply_text(
-        user_info, 
-        reply_markup=get_main_reply_keyboard(user.id, update.effective_chat.type)
-    )
+    try:
+        # Пытаемся отправить фото
+        await update.message.reply_photo(
+            photo=profile_photo,
+            caption=user_info,
+            reply_markup=get_main_reply_keyboard(user.id, update.effective_chat.type)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке фото профиля: {e}")
+        # Если не получилось отправить фото, отправляем текст
+        await update.message.reply_text(
+            user_info, 
+            reply_markup=get_main_reply_keyboard(user.id, update.effective_chat.type)
+        )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
@@ -291,6 +410,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/del_garant @username - Удалить гаранта\n"
         "/add_scammer @username доказательства - Добавить скамера\n"
         "/del_scammer @username - Удалить скамера\n\n"
+        "📊 Статус бота: /status\n"
+        "📸 Получить ID фото: /getid\n"
         "🛠 Разработчик: @SAGYN_OFFICIAL"
     )
     await update.message.reply_text(
@@ -386,6 +507,48 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Ссылка: https://t.me/{username}"
         )
 
+# Команда для проверки статуса бота
+async def bot_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать статус бота"""
+    status_text = (
+        "🤖 Статус Anti-Scam Bot:\n\n"
+        f"📊 Статус: ✅ Онлайн\n"
+        f"⏱ Запущен: {bot_status['started_at'][:19]}\n"
+        f"🔄 Uptime: {str(datetime.now() - datetime.fromisoformat(bot_status['started_at']))}\n"
+        f"📡 Последний пинг: {bot_status['last_ping'][:19]}\n"
+        f"🌐 Запросов к API: {bot_status['total_requests']}\n\n"
+        f"📈 Health check: /health доступен\n"
+        f"🏓 Ping: /ping доступен\n\n"
+        f"⚡ Бот работает нормально"
+    )
+    await update.message.reply_text(status_text)
+
+# Команда для получения ID фото
+async def getid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получить File ID фото"""
+    if update.message.photo:
+        photo = update.message.photo[-1]
+        response = (
+            f"📸 File ID получен!\n\n"
+            f"`{photo.file_id}`\n\n"
+            f"📏 Размер: {photo.file_size:,} байт\n"
+            f"📐 Разрешение: {photo.width}×{photo.height}\n\n"
+            f"💡 Скопируйте этот ID и вставьте в код:\n"
+            f"PHOTO_XXX = \"{photo.file_id}\""
+        )
+        await update.message.reply_text(response, parse_mode='Markdown')
+    elif update.message.document:
+        await update.message.reply_text(
+            f"📄 Document ID: `{update.message.document.file_id}`",
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text(
+            "❌ Отправьте фото, чтобы получить его File ID\n\n"
+            "📌 Просто отправьте фото в этот чат, и я покажу его ID\n"
+            "💡 Используйте этот ID в переменных PHOTO_START, PHOTO_REGULAR и т.д."
+        )
+
 # Обработчик текстовых сообщений (кнопок)
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -421,9 +584,11 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "📊 Возможности:\n"
                 "• Проверка пользователей в базе данных\n"
                 "• База скамеров и гарантов\n"
-                "• История проверок\n\n"
+                "• История проверок\n"
+                "• Мониторинг UptimeRobot\n"
+                "• Фото профиля для каждого статуса\n\n"
                 "🛠 Разработчик: @SAGYN_OFFICIAL\n"
-                "📅 Версия: 2.0"
+                "📅 Версия: 3.0 (с фото профиля)"
             )
             await update.message.reply_text(info_text, reply_markup=get_main_reply_keyboard(user.id, chat_type))
         elif text == "🔐 Админ панель" and user.id == ADMIN_ID:
@@ -452,7 +617,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"⭐ Гарантов в базе: {garant_count}\n"
                 f"🔍 Всего проверок: {search_count}\n\n"
                 f"🌐 Хост: Render.com\n"
-                f"🔄 Версия: 2.0"
+                f"📡 Запросов к API: {bot_status['total_requests']}\n"
+                f"🔄 Версия: 3.0"
             )
             await update.message.reply_text(stats_text, reply_markup=get_admin_reply_keyboard())
         elif text == "⬅️ На главную":
@@ -470,11 +636,22 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # ========== ОСНОВНАЯ ФУНКЦИЯ ==========
 def main():
-    """Запуск Telegram бота"""
+    """Запуск системы"""
     try:
-        print("🤖 Инициализация бота...")
+        print("🚀 Запуск системы с мониторингом и фото профиля...")
         
-        # Создаем приложение
+        # Запускаем веб-сервер в отдельном потоке
+        web_thread = threading.Thread(target=run_web_server, daemon=True)
+        web_thread.start()
+        
+        print("🌐 Веб-сервер запущен")
+        print(f"👑 Админ ID: {ADMIN_ID}")
+        
+        # Ждем немного для запуска веб-сервера
+        time.sleep(2)
+        
+        # Создаем приложение Telegram бота
+        print("🤖 Инициализация Telegram бота...")
         application = Application.builder().token(TOKEN).build()
         
         # Добавляем обработчики
@@ -482,6 +659,8 @@ def main():
         application.add_handler(CommandHandler("check", check_command))
         application.add_handler(CommandHandler("me", me_command))
         application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("status", bot_status_command))
+        application.add_handler(CommandHandler("getid", getid_command))
         application.add_handler(CommandHandler("add_garant", add_garant))
         application.add_handler(CommandHandler("del_garant", del_garant))
         application.add_handler(CommandHandler("add_scammer", add_scammer))
@@ -498,9 +677,18 @@ def main():
         
         application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
         
-        print("✅ Бот настроен и готов к работе")
-        print("📡 Запуск polling...")
-        print("🚀 Бот запущен! Отправьте /start в Telegram")
+        print("✅ Система настроена и готова к работе")
+        print("📡 Запуск polling Telegram бота...")
+        print("🚀 Система запущена! Отправьте /start в Telegram")
+        print("\n📸 Фото профиля добавлены:")
+        print("   • Обычный пользователь - PHOTO_USER_PROFILE")
+        print("   • Скамер - PHOTO_USER_SCAMMER")
+        print("   • Гарант - PHOTO_GARANT")
+        print("\n💡 Чтобы получить новые File ID для фото, используйте команду /getid")
+        print("\n🔗 Для UptimeRobot используйте эти URL:")
+        print(f"   • Monitor URL: https://anti-scam-bot1-7.onrender.com/health")
+        print(f"   • Ping URL: https://anti-scam-bot1-7.onrender.com/ping")
+        print(f"   • Status URL: https://anti-scam-bot1-7.onrender.com/status")
         
         # Запускаем polling с обработкой ошибок
         application.run_polling(
@@ -512,60 +700,6 @@ def main():
         print(f"🔴 Критическая ошибка: {e}")
         import traceback
         traceback.print_exc()
-
-if __name__ == '__main__':
-    main()
-import os
-import threading
-import requests
-import time
-from datetime import datetime
-
-# ... ваш существующий код бота ...
-
-def update_health_status(alive=True):
-    """Обновляет статус бота в health-check сервисе"""
-    try:
-        # Определяем порт (Render устанавливает PORT env var)
-        port = os.environ.get('PORT', 5000)
-        url = f"http://localhost:{port}/status/update"
-        
-        requests.post(url, json={'alive': alive}, timeout=2)
-    except Exception as e:
-        print(f"Failed to update health status: {e}")
-
-def periodic_status_update():
-    """Периодически обновляет статус бота"""
-    while True:
-        try:
-            update_health_status(True)
-        except:
-            pass
-        time.sleep(60)  # Обновляем каждую минуту
-
-# В функции main() вашего бота добавьте:
-def main():
-    # ... ваш существующий код ...
-    
-    # Запускаем health-check сервер
-    try:
-        from app import run_health_check
-        health_thread = run_health_check()
-        print("Health-check server started")
-    except ImportError:
-        print("Warning: app.py not found, health-check disabled")
-    
-    # Запускаем периодическое обновление статуса
-    status_thread = threading.Thread(target=periodic_status_update, daemon=True)
-    status_thread.start()
-    
-    # Обновляем статус при запуске
-    update_health_status(True)
-    
-    # ... ваш существующий код запуска бота ...
-    
-    # При завершении бота
-    update_health_status(False)
 
 if __name__ == '__main__':
     main()
