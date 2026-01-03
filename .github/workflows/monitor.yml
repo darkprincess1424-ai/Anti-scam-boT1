@@ -1,0 +1,214 @@
+name: Health Check Monitor
+
+on:
+  schedule:
+    # Каждые 5 минут
+    - cron: '*/5 * * * *'
+  # Запуск вручную из GitHub UI
+  workflow_dispatch:
+    inputs:
+      check_type:
+        description: 'Type of check'
+        required: false
+        default: 'full'
+        type: choice
+        options:
+          - quick
+          - full
+          - metrics
+
+env:
+  SERVICE_URL: "https://antibot-9vbj.onrender.com"
+  TIMEOUT_SECONDS: 45
+  MAX_RETRIES: 3
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    
+    steps:
+      - name: Setup environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl bc
+          
+      - name: Check health endpoint
+        id: health_check
+        continue-on-error: true
+        run: |
+          echo "🔄 Checking service health..."
+          
+          retry_count=0
+          while [ $retry_count -lt $MAX_RETRIES ]; do
+            echo "Attempt $((retry_count + 1))..."
+            
+            response=$(curl -s -w "\n%{http_code}" \
+              --max-time $TIMEOUT_SECONDS \
+              "$SERVICE_URL/health" || echo "CURL_ERROR")
+            
+            # Разделяем тело ответа и статус код
+            if [[ "$response" == *CURL_ERROR* ]]; then
+              status_code=000
+              body="{}"
+            else
+              status_code=$(echo "$response" | tail -n1)
+              body=$(echo "$response" | head -n -1)
+            fi
+            
+            echo "Status code: $status_code"
+            
+            if [ "$status_code" -eq 200 ]; then
+              # Парсим JSON ответ
+              service_status=$(echo "$body" | jq -r '.status // "unknown"')
+              bot_alive=$(echo "$body" | jq -r '.metrics.bot_alive // false')
+              
+              echo "✅ Service responded with status: $service_status"
+              echo "🤖 Bot alive: $bot_alive"
+              
+              # Сохраняем выходные данные
+              echo "service_status=$service_status" >> $GITHUB_OUTPUT
+              echo "bot_alive=$bot_alive" >> $GITHUB_OUTPUT
+              echo "status_code=$status_code" >> $GITHUB_OUTPUT
+              echo "healthy=true" >> $GITHUB_OUTPUT
+              
+              # Дополнительные метрики
+              if [ "$service_status" = "healthy" ] && [ "$bot_alive" = "true" ]; then
+                echo "all_checks_passed=true" >> $GITHUB_OUTPUT
+              else
+                echo "all_checks_passed=false" >> $GITHUB_OUTPUT
+              fi
+              
+              exit 0
+            fi
+            
+            retry_count=$((retry_count + 1))
+            if [ $retry_count -lt $MAX_RETRIES ]; then
+              echo "⏳ Retrying in 10 seconds..."
+              sleep 10
+            fi
+          done
+          
+          echo "❌ All retries failed"
+          echo "healthy=false" >> $GITHUB_OUTPUT
+          echo "all_checks_passed=false" >> $GITHUB_OUTPUT
+          exit 1
+          
+      - name: Send Telegram alert (if unhealthy)
+        if: steps.health_check.outputs.healthy != 'true'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "🚨 Sending Telegram alert..."
+          
+          MESSAGE="🔴 *Service Alert*
+          
+          *Service:* \`antibot-9vbj\`
+          *Status:* UNHEALTHY ⚠️
+          *URL:* $SERVICE_URL
+          *Time:* $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          
+          Health check failed after $MAX_RETRIES attempts.
+          
+          *GitHub Actions:*
+          $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          
+          curl -s -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "text=${MESSAGE}" \
+            -d "parse_mode=Markdown" \
+            -d "disable_web_page_preview=true"
+            
+      - name: Send recovery notification (manual trigger)
+        if: steps.health_check.outputs.healthy == 'true' && github.event_name == 'workflow_dispatch'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "✅ Sending recovery notification..."
+          
+          MESSAGE="🟢 *Service Recovery*
+          
+          *Service:* \`antibot-9vbj\`
+          *Status:* HEALTHY ✅
+          *URL:* $SERVICE_URL
+          *Time:* $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          *Bot Status:* ${{ steps.health_check.outputs.bot_alive }}
+          
+          All health checks passed successfully."
+          
+          curl -s -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "text=${MESSAGE}" \
+            -d "parse_mode=Markdown"
+
+      - name: Store check results
+        if: always()
+        run: |
+          echo "📊 Storing check results..."
+          
+          RESULTS_DIR="$HOME/health-results"
+          mkdir -p "$RESULTS_DIR"
+          
+          TIMESTAMP=$(date -u +'%Y-%m-%d_%H-%M-%S')
+          RESULTS_FILE="$RESULTS_DIR/check_${TIMESTAMP}.json"
+          
+          cat > "$RESULTS_FILE" << EOF
+          {
+            "timestamp": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
+            "service_url": "$SERVICE_URL",
+            "healthy": ${{ steps.health_check.outputs.healthy || false }},
+            "service_status": "${{ steps.health_check.outputs.service_status || 'unknown' }}",
+            "bot_alive": ${{ steps.health_check.outputs.bot_alive || false }},
+            "status_code": ${{ steps.health_check.outputs.status_code || 0 }},
+            "run_id": "$GITHUB_RUN_ID",
+            "run_url": "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          }
+          EOF
+          
+          echo "Results saved to $RESULTS_FILE"
+          
+      - name: Upload results as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: health-check-results
+          path: ${{ runner.temp }}/health-results/
+          retention-days: 7
+
+  daily-report:
+    runs-on: ubuntu-latest
+    needs: [health-check]
+    if: always() && github.event_name == 'schedule'
+    
+    steps:
+      - name: Generate daily health report
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "📈 Generating daily report..."
+          
+          # Здесь можно добавить логику анализа истории проверок
+          # Например, посчитать uptime за последние 24 часа
+          
+          MESSAGE="📊 *Daily Health Report*
+          
+          *Service:* \`antibot-9vbj\`
+          *Date:* $(date -u +'%Y-%m-%d')
+          
+          *Last Check:*
+          Status: ${{ needs.health-check.outputs.service_status || 'unknown' }}
+          Bot Alive: ${{ needs.health-check.outputs.bot_alive || false }}
+          
+          *Repository:* $GITHUB_REPOSITORY
+          *Monitor:* Health Check GitHub Action"
+          
+          curl -s -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "text=${MESSAGE}" \
+            -d "parse_mode=Markdown"
