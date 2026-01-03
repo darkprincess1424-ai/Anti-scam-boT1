@@ -515,3 +515,57 @@ def main():
 
 if __name__ == '__main__':
     main()
+import os
+import threading
+import requests
+import time
+from datetime import datetime
+
+# ... ваш существующий код бота ...
+
+def update_health_status(alive=True):
+    """Обновляет статус бота в health-check сервисе"""
+    try:
+        # Определяем порт (Render устанавливает PORT env var)
+        port = os.environ.get('PORT', 5000)
+        url = f"http://localhost:{port}/status/update"
+        
+        requests.post(url, json={'alive': alive}, timeout=2)
+    except Exception as e:
+        print(f"Failed to update health status: {e}")
+
+def periodic_status_update():
+    """Периодически обновляет статус бота"""
+    while True:
+        try:
+            update_health_status(True)
+        except:
+            pass
+        time.sleep(60)  # Обновляем каждую минуту
+
+# В функции main() вашего бота добавьте:
+def main():
+    # ... ваш существующий код ...
+    
+    # Запускаем health-check сервер
+    try:
+        from app import run_health_check
+        health_thread = run_health_check()
+        print("Health-check server started")
+    except ImportError:
+        print("Warning: app.py not found, health-check disabled")
+    
+    # Запускаем периодическое обновление статуса
+    status_thread = threading.Thread(target=periodic_status_update, daemon=True)
+    status_thread.start()
+    
+    # Обновляем статус при запуске
+    update_health_status(True)
+    
+    # ... ваш существующий код запуска бота ...
+    
+    # При завершении бота
+    update_health_status(False)
+
+if __name__ == '__main__':
+    main()
