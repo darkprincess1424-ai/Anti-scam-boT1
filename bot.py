@@ -170,7 +170,7 @@ conn.commit()
 print("✅ База данных инициализирована")
 
 # File ID для фото (ОБНОВЛЕННЫЕ ID!)
-PHOTO_START = "AgACAgIAAxkBAAFALrZpWq9CshB5ynDlsyv2xaBvyI7WqQACXQ1rG2mA2UrwMQ6YMiZz4gEAAwIAA3kAAzg"  # Новое приветственное фото
+PHOTO_START = "AgACAgIAAxkBAAFALzlpWrbu3Mh-J4FHowyB1zcDvthwQgACyw1rG2mA2UoPiErjGtnHqgEAAwIAA3cAAzgE"  # Новое приветственное фото
 PHOTO_REGULAR = "AgACAgIAAxkBAAN1aVQoJSgHP0O-8o-DzxfyFyhECVcAAuQSaxsh3qFKiK5R5uBgEwABAAMCAAN5AAM4BA"
 PHOTO_SCAMMER = "AgACAgIAAxkBAAN1aVQoJSgHP0O-8o-DzxfyFyhECVcAAuQSaxsh3qFKiK5R5uBgEwABAAMCAAN5AAM4BA"
 PHOTO_GARANT = "AgACAgIAAxkBAAFALpxpWq1tDFrzG1w3Q1C9-3wRGuCbgAACLQ9rG8us2Eq442Yxg-chjgEAAwIAA3cAAzgE"  # Новое фото для гаранта
