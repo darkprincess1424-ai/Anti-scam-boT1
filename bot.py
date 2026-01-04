@@ -83,12 +83,16 @@ def status():
         cursor.execute("SELECT COUNT(*) FROM search_history")
         search_count = cursor.fetchone()[0] or 0
         
+        cursor.execute("SELECT COUNT(*) FROM chat_admins")
+        chat_admins_count = cursor.fetchone()[0] or 0
+        
         conn.close()
         
         stats = {
             "scammers": scammer_count,
             "garants": garant_count,
-            "searches": search_count
+            "searches": search_count,
+            "chat_admins": chat_admins_count
         }
     except:
         stats = {"error": "Не удалось получить статистику"}
@@ -166,6 +170,17 @@ CREATE TABLE IF NOT EXISTS chat_warnings (
     last_warn_date TEXT
 )''')
 
+# Таблица для администраторов чатов
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS chat_admins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    chat_id INTEGER,
+    added_by INTEGER,
+    added_date TEXT,
+    UNIQUE(user_id, chat_id)
+)''')
+
 conn.commit()
 print("✅ База данных инициализирована")
 
@@ -213,10 +228,46 @@ def get_admin_reply_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
+# ========== ФУНКЦИИ ДЛЯ ПРОВЕРКИ ПРАВ ==========
+def is_global_admin(user_id):
+    """Проверка, является ли пользователь глобальным администратором"""
+    return user_id == ADMIN_ID
+
+def is_chat_admin(user_id, chat_id):
+    """Проверка, является ли пользователь администратором чата"""
+    try:
+        cursor.execute("SELECT 1 FROM chat_admins WHERE user_id = ? AND chat_id = ?", (user_id, chat_id))
+        return cursor.fetchone() is not None
+    except Exception as e:
+        logger.error(f"Ошибка при проверке прав администратора чата: {e}")
+        return False
+
+def can_manage_chat(user_id, chat_id):
+    """Проверка, может ли пользователь управлять чатом"""
+    return is_global_admin(user_id) or is_chat_admin(user_id, chat_id)
+
+# ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ ПРЕДОТВРАЩЕНИЯ ДУБЛИРОВАНИЯ ==========
+last_message_time = {}
+MESSAGE_COOLDOWN = 1  # 1 секунда между сообщениями от одного пользователя
+
+def check_message_cooldown(user_id):
+    """Проверяет, можно ли отправить сообщение пользователю"""
+    current_time = time.time()
+    if user_id in last_message_time:
+        time_diff = current_time - last_message_time[user_id]
+        if time_diff < MESSAGE_COOLDOWN:
+            return False
+    last_message_time[user_id] = current_time
+    return True
+
 # ========== ОСНОВНЫЕ КОМАНДЫ ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_type = update.effective_chat.type
+    
+    # Проверяем кулдаун
+    if not check_message_cooldown(user.id):
+        return
     
     welcome_text = (
         "🤩 Anti Scam - начинающий проект, который будет помогать людям не попадатся на скам и на сомнительные услуги.\n\n"
@@ -287,6 +338,10 @@ async def check_user(user_id, username, searcher_id):
         return {"type": "regular", "search_count": 0}
 
 async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Проверяем кулдаун
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
     if context.args:
         username = context.args[0].replace('@', '')
         user_id = hash(username) % 1000000
@@ -387,6 +442,10 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /me и обработчик кнопки 'Мой профиль' с фото"""
+    # Проверяем кулдаун
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
     user = update.effective_user
     result = await check_user(user.id, user.username or f"id{user.id}", user.id)
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -432,6 +491,14 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Проверяем кулдаун
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
+    chat_type = update.effective_chat.type
+    user = update.effective_user
+    
+    # Базовый текст помощи
     help_text = (
         "🤖 Anti-Scam Bot - Справка\n\n"
         "📌 Основные команды:\n"
@@ -439,28 +506,49 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/check @username - Проверить пользователя\n"
         "/check (в ответ на сообщение) - Проверить отправителя\n"
         "/me - Показать мой профиль\n\n"
-        "🕵️‍♂️ Админ команды:\n"
-        "/add_garant @username - Добавить гаранта\n"
-        "/del_garant @username - Удалить гаранта\n"
-        "/add_scammer @username доказательства - Добавить скамера\n"
-        "/del_scammer @username - Удалить скамера\n\n"
+    )
+    
+    # Если пользователь в чате и имеет права
+    if chat_type in ["group", "supergroup"] and can_manage_chat(user.id, update.effective_chat.id):
+        help_text += (
+            "👑 Команды для управления чатом:\n"
+            "/add_admin @username или ID - Добавить администратора чата\n"
+            "/del_admin @username или ID - Удалить администратора чата\n"
+            "/list_admins - Список администраторов чата\n"
+            "/warn @username (часы) - Выдать предупреждение\n"
+            "/mute @username (время) - Заглушить пользователя\n"
+            "/open - Открыть чат\n"
+            "/close - Закрыть чат\n\n"
+        )
+    
+    # Админ команды (только для глобального админа)
+    if user.id == ADMIN_ID:
+        help_text += (
+            "🕵️‍♂️ Глобальные админ команды:\n"
+            "/add_garant @username - Добавить гаранта\n"
+            "/del_garant @username - Удалить гаранта\n"
+            "/add_scammer @username доказательства - Добавить скамера\n"
+            "/del_scammer @username - Удалить скамера\n\n"
+        )
+    
+    help_text += (
         "📊 Статус бота: /status\n"
         "📸 Получить ID фото: /getid\n\n"
-        "👑 Команды для чатов (только админ):\n"
-        "/warn @username (часы) - Выдать предупреждение\n"
-        "/mute @username (время) - Заглушить пользователя\n"
-        "/open - Открыть чат\n"
-        "/close - Закрыть чат\n\n"
         "🛠 Разработчик: @SAGYN_OFFICIAL"
     )
+    
     await update.message.reply_text(
         help_text,
         reply_markup=get_main_reply_keyboard(update.effective_user.id, update.effective_chat.type)
     )
 
 # ========== КОМАНДЫ ДЛЯ ЧАТОВ ==========
-async def warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выдать предупреждение пользователю в чате"""
+async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавить администратора чата"""
+    # Проверяем кулдаун
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
     chat = update.effective_chat
     user = update.effective_user
     
@@ -469,12 +557,213 @@ async def warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Эта команда работает только в группах!")
         return
     
-    if user.id != ADMIN_ID:
-        # Проверяем, является ли пользователь администратором
-        member = await context.bot.get_chat_member(chat.id, user.id)
-        if member.status not in ["creator", "administrator"]:
-            await update.message.reply_text("❌ Только администраторы могут использовать эту команду!")
+    if not can_manage_chat(user.id, chat.id):
+        await update.message.reply_text("❌ У вас нет прав для добавления администраторов!")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Использование: /add_admin @username или /add_admin ID\nПример: /add_admin @user123 или /add_admin 123456789")
+        return
+    
+    target = context.args[0]
+    
+    # Определяем user_id из аргумента
+    try:
+        if target.startswith('@'):
+            # Это username, используем хеш
+            user_id = hash(target.replace('@', '')) % 1000000
+            username = target.replace('@', '')
+            target_info = f"@{username}"
+        else:
+            # Это ID пользователя
+            user_id = int(target)
+            username = f"id{user_id}"
+            target_info = f"ID: {user_id}"
+    except ValueError:
+        await update.message.reply_text("❌ Неверный формат. Используйте: /add_admin @username или /add_admin ID")
+        return
+    
+    # Проверяем, не пытаются ли добавить самого себя
+    if user_id == user.id:
+        await update.message.reply_text("❌ Вы не можете добавить самого себя!")
+        return
+    
+    # Проверяем, не является ли пользователь уже администратором
+    if is_chat_admin(user_id, chat.id):
+        await update.message.reply_text(f"❌ Пользователь {target_info} уже является администратором этого чата!")
+        return
+    
+    # Добавляем администратора
+    try:
+        cursor.execute(
+            "INSERT INTO chat_admins (user_id, chat_id, added_by, added_date) VALUES (?, ?, ?, ?)",
+            (user_id, chat.id, user.id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        )
+        conn.commit()
+        
+        response = (
+            f"✅ Пользователь {target_info} добавлен как администратор чата!\n\n"
+            f"📛 Чат: {chat.title}\n"
+            f"👤 Добавил: {user.first_name}\n"
+            f"📅 Дата: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            f"🛡️ Теперь этот пользователь может:\n"
+            f"• Закрывать и открывать чат (/close, /open)\n"
+            f"• Выдавать предупреждения (/warn)\n"
+            f"• Заглушать пользователей (/mute)\n"
+            f"• Добавлять администраторов (/add_admin)\n"
+            f"• Удалять администраторов (/del_admin)\n\n"
+            f"📋 Используйте /list_admins чтобы увидеть всех администраторов."
+        )
+        
+        await update.message.reply_text(response)
+        
+    except sqlite3.IntegrityError:
+        await update.message.reply_text(f"❌ Пользователь {target_info} уже является администратором!")
+    except Exception as e:
+        logger.error(f"Ошибка в add_admin_command: {e}")
+        await update.message.reply_text("❌ Произошла ошибка при добавлении администратора!")
+
+async def del_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удалить администратора чата"""
+    # Проверяем кулдаун
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
+    chat = update.effective_chat
+    user = update.effective_user
+    
+    # Проверяем права
+    if chat.type not in ["group", "supergroup"]:
+        await update.message.reply_text("Эта команда работает только в группах!")
+        return
+    
+    if not can_manage_chat(user.id, chat.id):
+        await update.message.reply_text("❌ У вас нет прав для удаления администраторов!")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Использование: /del_admin @username или /del_admin ID\nПример: /del_admin @user123 или /del_admin 123456789")
+        return
+    
+    target = context.args[0]
+    
+    # Определяем user_id из аргумента
+    try:
+        if target.startswith('@'):
+            # Это username, используем хеш
+            user_id = hash(target.replace('@', '')) % 1000000
+            username = target.replace('@', '')
+            target_info = f"@{username}"
+        else:
+            # Это ID пользователя
+            user_id = int(target)
+            username = f"id{user_id}"
+            target_info = f"ID: {user_id}"
+    except ValueError:
+        await update.message.reply_text("❌ Неверный формат. Используйте: /del_admin @username или /del_admin ID")
+        return
+    
+    # Проверяем, не пытаются ли удалить самого себя (разрешено, но с предупреждением)
+    if user_id == user.id:
+        if not is_global_admin(user.id):
+            await update.message.reply_text("❌ Вы не можете удалить сами себя! Обратитесь к глобальному администратору.")
             return
+    
+    # Проверяем, является ли пользователь администратором
+    if not is_chat_admin(user_id, chat.id):
+        await update.message.reply_text(f"❌ Пользователь {target_info} не является администратором этого чата!")
+        return
+    
+    # Удаляем администратора
+    try:
+        cursor.execute("DELETE FROM chat_admins WHERE user_id = ? AND chat_id = ?", (user_id, chat.id))
+        conn.commit()
+        
+        if cursor.rowcount > 0:
+            response = (
+                f"✅ Пользователь {target_info} удален из администраторов чата!\n\n"
+                f"📛 Чат: {chat.title}\n"
+                f"👤 Удалил: {user.first_name}\n"
+                f"📅 Дата: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                f"⚠️ Теперь этот пользователь больше не может управлять чатом."
+            )
+            
+            await update.message.reply_text(response)
+        else:
+            await update.message.reply_text(f"❌ Не удалось удалить пользователя {target_info}!")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в del_admin_command: {e}")
+        await update.message.reply_text("❌ Произошла ошибка при удалении администратора!")
+
+async def list_admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать список администраторов чата"""
+    # Проверяем кулдаун
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
+    chat = update.effective_chat
+    
+    # Проверяем права
+    if chat.type not in ["group", "supergroup"]:
+        await update.message.reply_text("Эта команда работает только в группах!")
+        return
+    
+    try:
+        # Получаем список администраторов чата
+        cursor.execute(
+            "SELECT user_id, added_by, added_date FROM chat_admins WHERE chat_id = ? ORDER BY added_date",
+            (chat.id,)
+        )
+        chat_admins = cursor.fetchall()
+        
+        # Получаем глобального администратора
+        global_admin_info = f"👑 Глобальный администратор: ID {ADMIN_ID}\n"
+        
+        if chat_admins:
+            admins_list = []
+            for admin in chat_admins:
+                user_id, added_by, added_date = admin
+                admins_list.append(f"• ID: {user_id} (добавлен {added_date[:10]})")
+            
+            response = (
+                f"📋 Администраторы чата: {chat.title}\n\n"
+                f"{global_admin_info}\n"
+                f"👥 Администраторы чата ({len(chat_admins)}):\n"
+                + "\n".join(admins_list) +
+                f"\n\n📊 Всего администраторов: {len(chat_admins) + 1}"
+            )
+        else:
+            response = (
+                f"📋 Администраторы чата: {chat.title}\n\n"
+                f"{global_admin_info}\n"
+                f"👥 Администраторы чата: Нет\n\n"
+                f"📊 Всего администраторов: 1 (только глобальный)"
+            )
+        
+        await update.message.reply_text(response)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в list_admins_command: {e}")
+        await update.message.reply_text("❌ Произошла ошибка при получении списка администраторов!")
+
+async def warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выдать предупреждение пользователю в чате"""
+    # Проверяем кулдаун
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
+    chat = update.effective_chat
+    user = update.effective_user
+    
+    # Проверяем права
+    if chat.type not in ["group", "supergroup"]:
+        await update.message.reply_text("Эта команда работает только в группах!")
+        return
+    
+    if not can_manage_chat(user.id, chat.id):
+        await update.message.reply_text("❌ У вас нет прав для выдачи предупреждений!")
+        return
     
     if not context.args or len(context.args) < 2:
         await update.message.reply_text("Использование: /warn @username (часы)\nПример: /warn @user 24")
@@ -521,6 +810,10 @@ async def warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Заглушить пользователя в чате"""
+    # Проверяем кулдаун
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
     chat = update.effective_chat
     user = update.effective_user
     
@@ -529,12 +822,9 @@ async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Эта команда работает только в группах!")
         return
     
-    if user.id != ADMIN_ID:
-        # Проверяем, является ли пользователь администратором
-        member = await context.bot.get_chat_member(chat.id, user.id)
-        if member.status not in ["creator", "administrator"]:
-            await update.message.reply_text("❌ Только администраторы могут использовать эту команду!")
-            return
+    if not can_manage_chat(user.id, chat.id):
+        await update.message.reply_text("❌ У вас нет прав для заглушения пользователей!")
+        return
     
     if not context.args or len(context.args) < 2:
         await update.message.reply_text("Использование: /mute @username (время)\nПримеры:\n/mute @user 60m (60 минут)\n/mute @user 2h (2 часа)\n/mute @user 3d (3 дня)")
@@ -584,7 +874,8 @@ async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔇 Пользователь @{target_username} заглушен!\n\n"
             f"⏰ Время мьюта: {time_text}\n"
             f"📅 До: {until_date.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"⚠️ Предупреждение: Нарушение правил чата!"
+            f"⚠️ Причина: Нарушение правил чата!\n\n"
+            f"👤 Заглушил: {user.first_name}"
         )
         
         await update.message.reply_text(response)
@@ -597,6 +888,10 @@ async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Закрыть чат (ограничить отправку сообщений)"""
+    # Проверяем кулдаун
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
     chat = update.effective_chat
     user = update.effective_user
     
@@ -605,12 +900,9 @@ async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Эта команда работает только в группах!")
         return
     
-    if user.id != ADMIN_ID:
-        # Проверяем, является ли пользователь администратором
-        member = await context.bot.get_chat_member(chat.id, user.id)
-        if member.status not in ["creator", "administrator"]:
-            await update.message.reply_text("❌ Только администраторы могут использовать эту команду!")
-            return
+    if not can_manage_chat(user.id, chat.id):
+        await update.message.reply_text("❌ У вас нет прав для закрытия чата!")
+        return
     
     try:
         # Устанавливаем ограничения для всех участников
@@ -624,9 +916,6 @@ async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             can_invite_users=False,
             can_pin_messages=False
         )
-        
-        # В реальном боте нужно использовать:
-        # await context.bot.set_chat_permissions(chat.id, permissions)
         
         response = (
             f"🔒 Чат закрыт!\n\n"
@@ -645,6 +934,10 @@ async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Открыть чат (снять ограничения)"""
+    # Проверяем кулдаун
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
     chat = update.effective_chat
     user = update.effective_user
     
@@ -653,12 +946,9 @@ async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Эта команда работает только в группах!")
         return
     
-    if user.id != ADMIN_ID:
-        # Проверяем, является ли пользователь администратором
-        member = await context.bot.get_chat_member(chat.id, user.id)
-        if member.status not in ["creator", "administrator"]:
-            await update.message.reply_text("❌ Только администраторы могут использовать эту команду!")
-            return
+    if not can_manage_chat(user.id, chat.id):
+        await update.message.reply_text("❌ У вас нет прав для открытия чата!")
+        return
     
     try:
         # Восстанавливаем стандартные разрешения
@@ -672,9 +962,6 @@ async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             can_invite_users=True,
             can_pin_messages=False
         )
-        
-        # В реальном боте нужно использовать:
-        # await context.bot.set_chat_permissions(chat.id, permissions)
         
         response = (
             f"🔓 Чат открыт!\n\n"
@@ -693,6 +980,10 @@ async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== АДМИН КОМАНДЫ ==========
 async def add_garant(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Проверяем кулдаун
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Только для администратора!")
         return
@@ -713,6 +1004,10 @@ async def add_garant(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ @{username} добавлен в гаранты\nИнфо: {info_link}\nПруфы: {proofs_link}")
 
 async def del_garant(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Проверяем кулдаун
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Только для администратора!")
         return
@@ -731,8 +1026,16 @@ async def del_garant(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ @{username} не найден")
 
 async def add_scammer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Только для администратора!")
+    # Проверяем кулдаун
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
+    user = update.effective_user
+    chat = update.effective_chat
+    
+    # Проверяем права: глобальный админ ИЛИ админ чата
+    if not (is_global_admin(user.id) or (chat.type in ["group", "supergroup"] and is_chat_admin(user.id, chat.id))):
+        await update.message.reply_text("❌ У вас нет прав для добавления скамеров!")
         return
     
     if len(context.args) < 2:
@@ -748,12 +1051,20 @@ async def add_scammer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ON CONFLICT(user_id) DO UPDATE SET 
         scam_count = scam_count + 1,
         proofs = proofs || '\n' || excluded.proofs""",
-        (hash(username) % 1000000, username, proofs, ADMIN_ID, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        (hash(username) % 1000000, username, proofs, user.id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     )
     conn.commit()
-    await update.message.reply_text(f"✅ @{username} добавлен в скамеры")
+    
+    # Определяем, кто добавил
+    adder_info = "глобальным администратором" if is_global_admin(user.id) else f"администратором чата '{chat.title}'"
+    
+    await update.message.reply_text(f"✅ @{username} добавлен в скамеры\nДобавлено: {adder_info}")
 
 async def del_scammer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Проверяем кулдаун
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Только для администратора!")
         return
@@ -775,6 +1086,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
+    # Проверяем кулдаун для callback
+    if not check_message_cooldown(query.from_user.id):
+        return
+    
     if query.data.startswith("perma_link:"):
         username = query.data.split(":")[1]
         await query.edit_message_text(
@@ -784,6 +1099,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def bot_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать статус бота"""
+    # Проверяем кулдаун
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
     status_text = (
         "🤖 Статус Anti-Scam Bot:\n\n"
         f"📊 Статус: ✅ Онлайн\n"
@@ -799,6 +1118,10 @@ async def bot_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def getid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Получить File ID фото"""
+    # Проверяем кулдаун
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
     if update.message.photo:
         photo = update.message.photo[-1]
         response = (
@@ -825,6 +1148,10 @@ async def getid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ ==========
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        # Проверяем кулдаун
+        if not check_message_cooldown(update.effective_user.id):
+            return
+        
         text = update.message.text
         user = update.effective_user
         chat_type = update.effective_chat.type
@@ -864,9 +1191,12 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "/warn - выдать предупреждение\n"
                 "/mute - заглушить пользователя\n"
                 "/open - открыть чат\n"
-                "/close - закрыть чат\n\n"
+                "/close - закрыть чат\n"
+                "/add_admin - добавить администратора\n"
+                "/del_admin - удалить администратора\n"
+                "/list_admins - список администраторов\n\n"
                 "🛠 Разработчик: @SAGYN_OFFICIAL\n"
-                "📅 Версия: 4.0 (с управлением чатами)"
+                "📅 Версия: 5.0 (с системой администраторов чатов)"
             )
             await update.message.reply_text(info_text, reply_markup=get_main_reply_keyboard(user.id, chat_type))
         elif text == "🔐 Админ панель" and user.id == ADMIN_ID:
@@ -889,15 +1219,19 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             cursor.execute("SELECT COUNT(*) FROM search_history")
             search_count = cursor.fetchone()[0]
             
+            cursor.execute("SELECT COUNT(*) FROM chat_admins")
+            chat_admins_count = cursor.fetchone()[0]
+            
             stats_text = (
                 f"📊 Статистика бота:\n\n"
                 f"🚨 Скамеров в базе: {scammer_count}\n"
                 f"⭐ Гарантов в базе: {garant_count}\n"
                 f"🔍 Всего проверок: {search_count}\n"
-                f"👑 Админ ID: {ADMIN_ID}\n\n"
+                f"👥 Администраторов чатов: {chat_admins_count}\n"
+                f"👑 Глобальный админ ID: {ADMIN_ID}\n\n"
                 f"🌐 Хост: Render.com\n"
                 f"📡 Запросов к API: {bot_status['total_requests']}\n"
-                f"🔄 Версия: 4.0 (с управлением чатами)"
+                f"🔄 Версия: 5.0 (с системой администраторов чатов)"
             )
             await update.message.reply_text(stats_text, reply_markup=get_admin_reply_keyboard())
         elif text == "⬅️ На главную":
@@ -913,18 +1247,29 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         logger.error(f"Ошибка в handle_text_message: {e}")
 
+async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик неизвестных команд"""
+    # Проверяем кулдаун
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
+    await update.message.reply_text(
+        "❌ Неизвестная команда. Используйте /start или /help",
+        reply_markup=get_main_reply_keyboard(update.effective_user.id, update.effective_chat.type)
+    )
+
 # ========== ОСНОВНАЯ ФУНКЦИЯ ==========
 def main():
     """Запуск системы"""
     try:
-        print("🚀 Запуск системы с мониторингом, фото профиля и управлением чатами...")
+        print("🚀 Запуск системы с мониторингом, фото профиля и системой администраторов...")
         
         # Запускаем веб-сервер в отдельном потоке
         web_thread = threading.Thread(target=run_web_server, daemon=True)
         web_thread.start()
         
         print("🌐 Веб-сервер запущен")
-        print(f"👑 Админ ID: {ADMIN_ID}")
+        print(f"👑 Глобальный админ ID: {ADMIN_ID}")
         
         # Ждем немного для запуска веб-сервера
         time.sleep(2)
@@ -933,7 +1278,9 @@ def main():
         print("🤖 Инициализация Telegram бота...")
         application = Application.builder().token(TOKEN).build()
         
-        # Добавляем обработчики
+        # Добавляем обработчики с правильным порядком
+        
+        # Основные команды
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("check", check_command))
         application.add_handler(CommandHandler("me", me_command))
@@ -947,22 +1294,22 @@ def main():
         application.add_handler(CommandHandler("add_scammer", add_scammer))
         application.add_handler(CommandHandler("del_scammer", del_scammer))
         
-        # Команды для чатов
+        # Команды для управления чатами
+        application.add_handler(CommandHandler("add_admin", add_admin_command))
+        application.add_handler(CommandHandler("del_admin", del_admin_command))
+        application.add_handler(CommandHandler("list_admins", list_admins_command))
         application.add_handler(CommandHandler("warn", warn_command))
         application.add_handler(CommandHandler("mute", mute_command))
         application.add_handler(CommandHandler("open", open_command))
         application.add_handler(CommandHandler("close", close_command))
         
+        # Callback обработчик
         application.add_handler(CallbackQueryHandler(button_callback))
+        
+        # Обработчик текстовых сообщений (кнопок)
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
         
-        # Обработчик неизвестных команд
-        async def unknown_command(update, context):
-            await update.message.reply_text(
-                "❌ Неизвестная команда. Используйте /start или /help",
-                reply_markup=get_main_reply_keyboard(update.effective_user.id, update.effective_chat.type)
-            )
-        
+        # Обработчик неизвестных команд (ДОЛЖЕН БЫТЬ ПОСЛЕДНИМ!)
         application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
         
         print("✅ Система настроена и готова к работе")
@@ -973,11 +1320,25 @@ def main():
         print(f"   • Фото гаранта: {PHOTO_GARANT[:30]}...")
         print(f"   • Фото скамера: {PHOTO_SCAMMER[:30]}...")
         print(f"   • Фото обычного пользователя: {PHOTO_REGULAR[:30]}...")
-        print("\n👑 Новые команды для чатов:")
+        print("\n👑 НОВАЯ СИСТЕМА АДМИНИСТРАТОРОВ ЧАТОВ:")
+        print("   • Глобальный админ (ID 8281804228) - полные права")
+        print("   • Администраторы чатов - ограниченные права")
+        print("\n🛠️ Команды для управления чатами:")
+        print("   • /add_admin @username или ID - добавить администратора")
+        print("   • /del_admin @username или ID - удалить администратора")
+        print("   • /list_admins - показать список администраторов")
         print("   • /warn @username (часы) - выдать предупреждение")
         print("   • /mute @username (время) - заглушить пользователя")
         print("   • /open - открыть чат")
         print("   • /close - закрыть чат")
+        print("\n🔒 Права администраторов чатов:")
+        print("   • Закрывать и открывать чат")
+        print("   • Выдавать предупреждения и мьютить")
+        print("   • Добавлять скамеров в базу")
+        print("   • Добавлять/удалять других администраторов чата")
+        print("\n🛡️ Добавлена защита от дублирования сообщений:")
+        print("   • Кулдаун 1 секунда между сообщениями")
+        print("   • Проверка во всех обработчиках")
         print("\n📝 Тексты сообщений обновлены:")
         print("   • Сообщения для скамеров")
         print("   • Сообщения для обычных пользователей")
@@ -991,7 +1352,8 @@ def main():
         # Запускаем polling с обработкой ошибок
         application.run_polling(
             drop_pending_updates=True,
-            allowed_updates=None
+            allowed_updates=Update.ALL_TYPES,
+            close_loop=False
         )
         
     except Exception as e:
