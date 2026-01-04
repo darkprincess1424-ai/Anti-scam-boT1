@@ -170,12 +170,12 @@ conn.commit()
 print("✅ База данных инициализирована")
 
 # File ID для фото (ОБНОВЛЕННЫЕ ID!)
-PHOTO_START = "AgACAgIAAxkBAAMQaVq7dPqN_k4eYQ1hOebD3S1Ug9wAApEQaxsDadhKWeSxn5mnMV4BAAMCAAN5AAM4BA"  # Новое приветственное фото
-PHOTO_REGULAR = "AgACAgIAAxkBAAN1aVQoJSgHP0O-8o-DzxfyFyhECVcAAuQSaxsh3qFKiK5R5uBgEwABAAMCAAN5AAM4BA"
-PHOTO_SCAMMER = "AgACAgIAAxkBAAN1aVQoJSgHP0O-8o-DzxfyFyhECVcAAuQSaxsh3qFKiK5R5uBgEwABAAMCAAN5AAM4BA"
-PHOTO_GARANT = "AgACAgIAAxkBAAMOaVq7YmBEJ_PLtPwspZ2URBDze9oAAi0PaxvLrNhKOjIriN3Q1h8BAAMCAAN3AAM4BA"  # Новое фото для гаранта
-PHOTO_USER_PROFILE = "AgACAgIAAxkBAAN1aVQoJSgHP0O-8o-DzxfyFyhECVcAAuQSaxsh3qFKiK5R5uBgEwABAAMCAAN5AAM4BA"
-PHOTO_USER_SCAMMER = "AgACAgIAAxkBAAN1aVQoJSgHP0O-8o-DzxfyFyhECVcAAuQSaxsh3qFKiK5R5uBgEwABAAMCAAN5AAM4BA"
+PHOTO_START = "AgACAgIAAxkBAAMQaVq7dPqN_k4eYQ1hOebD3S1Ug9wAApEQaxsDadhKWeSxn5mnMV4BAAMCAAN5AAM4BA"  # Приветственное фото
+PHOTO_REGULAR = "AgACAgIAAxkBAAMUaVq_Lrrkjs1rNCv8Cxt_EjKIX_UAArkLaxs0uchK4LJUKE0hwKcBAAMCAAN5AAM4BA"  # Обычный пользователь
+PHOTO_SCAMMER = "AgACAgIAAxkBAAMSaVq_DAFoSgRFavl_r9WL6BmGLcsAAgQPaxvLrNhK12AQx_0YJloBAAMCAAN5AAM4BA"  # Скамер
+PHOTO_GARANT = "AgACAgIAAxkBAAMOaVq7YmBEJ_PLtPwspZ2URBDze9oAAi0PaxvLrNhKOjIriN3Q1h8BAAMCAAN3AAM4BA"  # Гарант
+PHOTO_USER_PROFILE = "AgACAgIAAxkBAAMUaVq_Lrrkjs1rNCv8Cxt_EjKIX_UAArkLaxs0uchK4LJUKE0hwKcBAAMCAAN5AAM4BA"  # Профиль обычного
+PHOTO_USER_SCAMMER = "AgACAgIAAxkBAAMSaVq_DAFoSgRFavl_r9WL6BmGLcsAAgQPaxvLrNhK12AQx_0YJloBAAMCAAN5AAM4BA"  # Профиль скамера
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def get_welcome_inline_keyboard():
@@ -234,6 +234,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Ошибка при отправке фото: {e}")
+        logger.error(f"File ID приветственного фото: {PHOTO_START}")
         await update.message.reply_text(
             welcome_text,
             reply_markup=get_welcome_inline_keyboard()
@@ -318,6 +319,8 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_check_result_inline_keyboard(username)
             )
         except Exception as e:
+            logger.error(f"Ошибка при отправке фото обычного пользователя: {e}")
+            logger.error(f"File ID: {PHOTO_REGULAR}")
             await update.message.reply_text(
                 response,
                 reply_markup=get_check_result_inline_keyboard(username)
@@ -345,6 +348,8 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_check_result_inline_keyboard(username)
             )
         except Exception as e:
+            logger.error(f"Ошибка при отправке фото скамера: {e}")
+            logger.error(f"File ID: {PHOTO_SCAMMER}")
             await update.message.reply_text(
                 response,
                 reply_markup=get_check_result_inline_keyboard(username)
@@ -373,6 +378,8 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_check_result_inline_keyboard(username)
             )
         except Exception as e:
+            logger.error(f"Ошибка при отправке фото гаранта: {e}")
+            logger.error(f"File ID: {PHOTO_GARANT}")
             await update.message.reply_text(
                 response,
                 reply_markup=get_check_result_inline_keyboard(username)
@@ -399,7 +406,7 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_emoji = "👤"
     
     user_info = (
-        f" {status_emoji} Ваш профиль:\n\n"
+        f"{status_emoji} Ваш профиль:\n\n"
         f"🆔 ID: {user.id}\n"
         f"📛 Имя: {user.first_name}\n"
         f"📧 Username: @{user.username or 'Нет'}\n"
@@ -417,6 +424,7 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Ошибка при отправке фото профиля: {e}")
+        logger.error(f"File ID профиля: {profile_photo}")
         # Если не получилось отправить фото, отправляем текст
         await update.message.reply_text(
             user_info, 
@@ -960,9 +968,11 @@ def main():
         print("✅ Система настроена и готова к работе")
         print("📡 Запуск polling Telegram бота...")
         print("🚀 Система запущена! Отправьте /start в Telegram")
-        print("\n📸 Фото профиля добавлены:")
-        print("   • Приветственное фото - ОБНОВЛЕНО")
-        print("   • Фото гаранта - ОБНОВЛЕНО")
+        print("\n📸 Фото профиля добавлены с новыми File ID:")
+        print(f"   • Приветственное фото: {PHOTO_START[:30]}...")
+        print(f"   • Фото гаранта: {PHOTO_GARANT[:30]}...")
+        print(f"   • Фото скамера: {PHOTO_SCAMMER[:30]}...")
+        print(f"   • Фото обычного пользователя: {PHOTO_REGULAR[:30]}...")
         print("\n👑 Новые команды для чатов:")
         print("   • /warn @username (часы) - выдать предупреждение")
         print("   • /mute @username (время) - заглушить пользователя")
