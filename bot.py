@@ -170,10 +170,10 @@ conn.commit()
 print("✅ База данных инициализирована")
 
 # File ID для фото (ОБНОВЛЕННЫЕ ID!)
-PHOTO_START = "AgACAgIAAxkBAAFALzlpWrbu3Mh-J4FHowyB1zcDvthwQgACyw1rG2mA2UoPiErjGtnHqgEAAwIAA3cAAzgE"  # Новое приветственное фото
+PHOTO_START = "AgACAgIAAxkBAAMQaVq7dPqN_k4eYQ1hOebD3S1Ug9wAApEQaxsDadhKWeSxn5mnMV4BAAMCAAN5AAM4BA"  # Новое приветственное фото
 PHOTO_REGULAR = "AgACAgIAAxkBAAN1aVQoJSgHP0O-8o-DzxfyFyhECVcAAuQSaxsh3qFKiK5R5uBgEwABAAMCAAN5AAM4BA"
 PHOTO_SCAMMER = "AgACAgIAAxkBAAN1aVQoJSgHP0O-8o-DzxfyFyhECVcAAuQSaxsh3qFKiK5R5uBgEwABAAMCAAN5AAM4BA"
-PHOTO_GARANT = "AgACAgIAAxkBAAFALpxpWq1tDFrzG1w3Q1C9-3wRGuCbgAACLQ9rG8us2Eq442Yxg-chjgEAAwIAA3cAAzgE"  # Новое фото для гаранта
+PHOTO_GARANT = "AgACAgIAAxkBAAMOaVq7YmBEJ_PLtPwspZ2URBDze9oAAi0PaxvLrNhKOjIriN3Q1h8BAAMCAAN3AAM4BA"  # Новое фото для гаранта
 PHOTO_USER_PROFILE = "AgACAgIAAxkBAAN1aVQoJSgHP0O-8o-DzxfyFyhECVcAAuQSaxsh3qFKiK5R5uBgEwABAAMCAAN5AAM4BA"
 PHOTO_USER_SCAMMER = "AgACAgIAAxkBAAN1aVQoJSgHP0O-8o-DzxfyFyhECVcAAuQSaxsh3qFKiK5R5uBgEwABAAMCAAN5AAM4BA"
 
@@ -399,7 +399,7 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_emoji = "👤"
     
     user_info = (
-        f"👤 {status_emoji} Ваш профиль:\n\n"
+        f" {status_emoji} Ваш профиль:\n\n"
         f"🆔 ID: {user.id}\n"
         f"📛 Имя: {user.first_name}\n"
         f"📧 Username: @{user.username or 'Нет'}\n"
