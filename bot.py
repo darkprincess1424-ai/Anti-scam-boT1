@@ -170,12 +170,12 @@ conn.commit()
 print("✅ База данных инициализирована")
 
 # File ID для фото (ОБНОВЛЕННЫЕ ID!)
-PHOTO_START = "AgACAgIAAxkBAAMQaVq7dPqN_k4eYQ1hOebD3S1Ug9wAApEQaxsDadhKWeSxn5mnMV4BAAMCAAN5AAM4BA"  # Приветственное фото
+PHOTO_START = "AgACAgIAAxkBAAIDZWlawvkQNkP8MXd2rJD_3rSAjRM3AAKREGsbA2nYSl4aZbvY2AnWAQADAgADeQADOAQ"  # Приветственное фото
 PHOTO_REGULAR = "AgACAgIAAxkBAAMUaVq_Lrrkjs1rNCv8Cxt_EjKIX_UAArkLaxs0uchK4LJUKE0hwKcBAAMCAAN5AAM4BA"  # Обычный пользователь
-PHOTO_SCAMMER = "AgACAgIAAxkBAAMSaVq_DAFoSgRFavl_r9WL6BmGLcsAAgQPaxvLrNhK12AQx_0YJloBAAMCAAN5AAM4BA"  # Скамер
-PHOTO_GARANT = "AgACAgIAAxkBAAMOaVq7YmBEJ_PLtPwspZ2URBDze9oAAi0PaxvLrNhKOjIriN3Q1h8BAAMCAAN3AAM4BA"  # Гарант
-PHOTO_USER_PROFILE = "AgACAgIAAxkBAAMUaVq_Lrrkjs1rNCv8Cxt_EjKIX_UAArkLaxs0uchK4LJUKE0hwKcBAAMCAAN5AAM4BA"  # Профиль обычного
-PHOTO_USER_SCAMMER = "AgACAgIAAxkBAAMSaVq_DAFoSgRFavl_r9WL6BmGLcsAAgQPaxvLrNhK12AQx_0YJloBAAMCAAN5AAM4BA"  # Профиль скамера
+PHOTO_SCAMMER = "AgACAgIAAxkBAAIDaWlawx_urljf74qS6leP477MBxt4AAIED2sby6zYSgtMTANBvgeiAQADAgADeQADOAQ"  # Скамер
+PHOTO_GARANT = "AgACAgIAAxkBAAIDWGlawdetyw8Bxtr4JE-mTxOX2l3BAAItD2sby6zYSlJ4rr-r8kTbAQADAgADdwADOAQ"  # Гарант
+PHOTO_USER_PROFILE = "AgACAgIAAxkBAAIDW2lawhVT7Hymkx40VVfJXSP_GopBAAK5C2sbNLnISs-ffVUmfUjhAQADAgADeQADOAQ"  # Профиль обычного
+PHOTO_USER_SCAMMER = "AgACAgIAAxkBAAIDaWlawx_urljf74qS6leP477MBxt4AAIED2sby6zYSgtMTANBvgeiAQADAgADeQADOAQ"  # Профиль скамера
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def get_welcome_inline_keyboard():
