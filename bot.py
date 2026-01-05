@@ -4,20 +4,14 @@ import os
 import datetime
 from typing import Dict, List, Optional
 from flask import Flask, request, jsonify
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram import Router
-import asyncio
-from threading import Thread
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, PhotoSize
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, ConversationHandler, filters
+from telegram.constants import ParseMode
 
 # Настройка логирования
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
@@ -42,15 +36,11 @@ PHOTOS = {
     'admin': 'AgACAgIAAxkBAAMQaVuX1K1bJLDWomL_T1ubUBQdnVYAAgcNaxsDaeBKrAABfnFPRUbCAQADAgADeQADOAQ'
 }
 
+# Состояния для ConversationHandler
+WAITING_FOR_REASON, WAITING_FOR_PROOF, WAITING_FOR_BIO, WAITING_FOR_PROOF_LINK = range(4)
+
 # Инициализация Flask
 app = Flask(__name__)
-
-# Инициализация бота
-bot = Bot(token=API_TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
-router = Router()
-dp.include_router(router)
 
 # ========== ХРАНЕНИЕ ДАННЫХ ==========
 class Database:
@@ -229,23 +219,6 @@ class Database:
 
 db = Database()
 
-# ========== СОСТОЯНИЯ FSM ==========
-class AddScammerState(StatesGroup):
-    waiting_for_username = State()
-    waiting_for_reason = State()
-    waiting_for_proof = State()
-
-class AddGarantState(StatesGroup):
-    waiting_for_username = State()
-    waiting_for_bio = State()
-    waiting_for_proof = State()
-
-class AddAdminState(StatesGroup):
-    waiting_for_username = State()
-
-class ChatManagementState(StatesGroup):
-    waiting_for_duration = State()
-
 # ========== КЛАВИАТУРЫ ==========
 def get_main_keyboard(user_id: int = None) -> ReplyKeyboardMarkup:
     """Основная клавиатура (только для личных сообщений)"""
@@ -321,9 +294,8 @@ def get_check_result_keyboard(user_id: str = None, username: str = None) -> Inli
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 # ========== ОБРАБОТЧИКИ КОМАНД ==========
-@router.message(Command("start"))
-async def cmd_start(message: Message):
-    """Команда /start"""
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /start"""
     start_text = """
 Anti Scam - начинающий проект, который будет помогать людям не попадатся на скам и на сомнительные услуги.
 
@@ -336,31 +308,30 @@ Anti Scam - начинающий проект, который будет пом�
 ✔️Если хотите нас поддержать, то ставьте в ник приписку 'As |  Ас'
 """
     
-    await message.answer_photo(
+    await update.message.reply_photo(
         photo=PHOTOS['start'],
         caption=start_text,
         reply_markup=get_inline_start_keyboard()
     )
     
     # Показываем клавиатуру только в личных сообщениях
-    if message.chat.type == "private":
-        await message.answer(
+    if update.effective_chat.type == "private":
+        await update.message.reply_text(
             "Добро пожаловать! Используйте кнопки ниже для навигации:",
-            reply_markup=get_main_keyboard(message.from_user.id)
+            reply_markup=get_main_keyboard(update.effective_user.id)
         )
 
-@router.message(F.text == "👤 Мой профиль")
-async def cmd_my_profile(message: Message):
-    """Проверка своего профиля"""
-    await check_user_profile(message, message.from_user.id, message.from_user.username)
+async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка 'Мой профиль'"""
+    user = update.effective_user
+    await check_user_profile(update, context, user.id, user.username)
 
-@router.message(F.text == "📋 Список гарантов")
-async def cmd_guarantees_list(message: Message):
-    """Список гарантов"""
+async def guarantees_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка 'Список гарантов'"""
     guarantees = db.get_all_guarantees()
     
     if not guarantees:
-        await message.answer("📭 Список гарантов пуст.")
+        await update.message.reply_text("📭 Список гарантов пуст.")
         return
     
     response = "📋 <b>Список гарантов:</b>\n\n"
@@ -372,11 +343,10 @@ async def cmd_guarantees_list(message: Message):
         response += f"{i}. @{username}\n"
         response += f"   🔗 Пруфы: {proof_link}\n\n"
     
-    await message.answer(response, parse_mode="HTML")
+    await update.message.reply_text(response, parse_mode=ParseMode.HTML)
 
-@router.message(F.text == "🛠 Команды бота")
-async def cmd_bot_commands(message: Message):
-    """Список команд бота"""
+async def bot_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка 'Команды бота'"""
     commands_text = """
 🤖 <b>Команды бота Anti Scam:</b>
 
@@ -403,13 +373,12 @@ async def cmd_bot_commands(message: Message):
 /id_photo - Показать ID всех фото бота
 """
     
-    await message.answer(commands_text, parse_mode="HTML")
+    await update.message.reply_text(commands_text, parse_mode=ParseMode.HTML)
 
-@router.message(Command("id_photo"))
-async def cmd_id_photo(message: Message):
-    """Показать ID фото"""
-    if not db.is_admin(message.from_user.id):
-        await message.answer("⛔ Эта команда только для администраторов.")
+async def id_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /id_photo"""
+    if not db.is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Эта команда только для администраторов.")
         return
     
     photo_info = """
@@ -431,18 +400,16 @@ async def cmd_id_photo(message: Message):
 <code>{admin}</code>
 """.format(**PHOTOS)
     
-    await message.answer(photo_info, parse_mode="HTML")
+    await update.message.reply_text(photo_info, parse_mode=ParseMode.HTML)
 
-@router.message(F.text == "🆔 ID фото")
-async def cmd_id_photo_button(message: Message):
-    """Кнопка ID фото"""
-    await cmd_id_photo(message)
+async def id_photo_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка 'ID фото'"""
+    await id_photo(update, context)
 
-@router.message(F.text == "👨‍💻 Админ панель")
-async def cmd_admin_panel(message: Message):
-    """Панель администратора"""
-    if not db.is_admin(message.from_user.id):
-        await message.answer("⛔ У вас нет доступа к админ панели.")
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка 'Админ панель'"""
+    if not db.is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ У вас нет доступа к админ панели.")
         return
     
     stats_text = f"""
@@ -455,16 +422,15 @@ async def cmd_admin_panel(message: Message):
 Используйте кнопки ниже для управления:
 """
     
-    await message.answer(stats_text, parse_mode="HTML", reply_markup=get_admin_keyboard())
+    await update.message.reply_text(stats_text, parse_mode=ParseMode.HTML, reply_markup=get_admin_keyboard())
 
-@router.message(F.text == "📊 Статистика")
-async def cmd_stats(message: Message):
-    """Статистика"""
-    if not db.is_admin(message.from_user.id):
-        await message.answer("⛔ У вас нет доступа.")
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка 'Статистика'"""
+    if not db.is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ У вас нет доступа.")
         return
     
-    user_id = str(message.from_user.id)
+    user_id = str(update.effective_user.id)
     scammer_count = db.get_scammers_count(user_id)
     
     stats_text = f"""
@@ -478,59 +444,57 @@ async def cmd_stats(message: Message):
 🤝 Всего гарантов: {len(db.guarantees)}
 """
     
-    await message.answer(stats_text, parse_mode="HTML")
+    await update.message.reply_text(stats_text, parse_mode=ParseMode.HTML)
 
-@router.message(F.text == "🔙 Назад")
-async def cmd_back(message: Message):
-    """Возврат в главное меню"""
-    await message.answer(
+async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка 'Назад'"""
+    await update.message.reply_text(
         "Главное меню:",
-        reply_markup=get_main_keyboard(message.from_user.id)
+        reply_markup=get_main_keyboard(update.effective_user.id)
     )
 
 # ========== КОМАНДЫ ПРОВЕРКИ ==========
-@router.message(Command("check"))
-async def cmd_check(message: Message):
-    """Проверка пользователя"""
-    args = message.text.split()
+async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /check"""
+    args = context.args
     
-    if len(args) == 1:
+    if not args:
         # Если команда без аргументов
-        if message.reply_to_message:
+        if update.message.reply_to_message:
             # Проверка по ответу на сообщение
-            user_to_check = message.reply_to_message.from_user
-            await check_user_profile(message, str(user_to_check.id), user_to_check.username)
+            user_to_check = update.message.reply_to_message.from_user
+            await check_user_profile(update, context, user_to_check.id, user_to_check.username)
         else:
-            await message.answer("❌ Укажите username для проверки или ответьте на сообщение пользователя.\nПример: /check @username")
-    elif len(args) == 2:
-        if args[1].lower() == "me":
+            await update.message.reply_text("❌ Укажите username для проверки или ответьте на сообщение пользователя.\nПример: /check @username")
+    elif len(args) == 1:
+        if args[0].lower() == "me":
             # Проверка себя
-            await check_user_profile(message, str(message.from_user.id), message.from_user.username)
+            await check_user_profile(update, context, update.effective_user.id, update.effective_user.username)
         else:
             # Проверка по username
-            username = args[1].replace("@", "")
+            username = args[0].replace("@", "")
             try:
-                user = await bot.get_chat(f"@{username}")
-                await check_user_profile(message, str(user.id), username)
+                user = await context.bot.get_chat(f"@{username}")
+                await check_user_profile(update, context, user.id, username)
             except Exception as e:
-                await message.answer(f"❌ Не удалось найти пользователя @{username}")
+                await update.message.reply_text(f"❌ Не удалось найти пользователя @{username}")
                 logger.error(f"Ошибка поиска пользователя: {e}")
     else:
-        await message.answer("❌ Неверный формат команды.\nИспользуйте: /check @username или /check me")
+        await update.message.reply_text("❌ Неверный формат команды.\nИспользуйте: /check @username или /check me")
 
-async def check_user_profile(message: Message, user_id: str, username: str = None):
+async def check_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, username: str = None):
     """Проверка профиля пользователя"""
     # Увеличиваем счетчик поисков
-    db.increment_search_count(user_id)
-    search_count = db.get_search_count(user_id)
+    db.increment_search_count(str(user_id))
+    search_count = db.get_search_count(str(user_id))
     
     current_time = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     
     # Определяем статус пользователя
-    if db.is_scammer(user_id):
+    if db.is_scammer(str(user_id)):
         # Скамер
         photo_id = PHOTOS['scammer']
-        scammer_info = db.get_scammer_info(user_id)
+        scammer_info = db.get_scammer_info(str(user_id))
         
         response = f"""🕵️ᴜsᴇʀ: @{username if username else 'unknown'}
 🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
@@ -550,10 +514,10 @@ async def check_user_profile(message: Message, user_id: str, username: str = Non
 
 оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!"""
         
-    elif db.is_garant(user_id):
+    elif db.is_garant(str(user_id)):
         # Гарант
         photo_id = PHOTOS['garant']
-        garant_info = db.get_garant_info(user_id)
+        garant_info = db.get_garant_info(str(user_id))
         
         response = f"""🕵️ᴜsᴇʀ: @{username if username else 'unknown'}
 🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
@@ -570,11 +534,11 @@ async def check_user_profile(message: Message, user_id: str, username: str = Non
 
 оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!"""
         
-    elif db.is_admin(int(user_id)):
+    elif db.is_admin(user_id):
         # Администратор
         photo_id = PHOTOS['admin']
-        admin_info = db.get_admin_info(user_id)
-        scammer_count = db.get_scammers_count(user_id)
+        admin_info = db.get_admin_info(str(user_id))
+        scammer_count = db.get_scammers_count(str(user_id))
         
         response = f"""🕵️ᴜsᴇʀ: @{username if username else 'unknown'}
 🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
@@ -606,286 +570,243 @@ async def check_user_profile(message: Message, user_id: str, username: str = Non
 оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!"""
     
     # Получаем инлайн клавиатуру
-    inline_keyboard = get_check_result_keyboard(user_id, username)
+    inline_keyboard = get_check_result_keyboard(str(user_id), username)
     
     # Отправляем результат с фото и инлайн кнопками
-    await message.answer_photo(
+    await update.message.reply_photo(
         photo=photo_id,
         caption=response,
         reply_markup=inline_keyboard
     )
 
 # ========== ОБРАБОТКА ИНЛАЙН КНОПОК ==========
-@router.callback_query(F.data.startswith("show_id_"))
-async def handle_show_id(callback: CallbackQuery):
-    """Показать ID пользователя"""
-    user_id = callback.data.replace("show_id_", "")
-    await callback.answer(f"🆔 ID пользователя: {user_id}", show_alert=True)
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик инлайн кнопок"""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data.startswith("show_id_"):
+        user_id = query.data.replace("show_id_", "")
+        await query.edit_message_caption(caption=f"🆔 ID пользователя: {user_id}")
 
 # ========== АДМИН КОМАНДЫ ==========
-@router.message(Command("add_scammer"))
-async def cmd_add_scammer(message: Message, state: FSMContext):
-    """Добавить скамера"""
-    if not db.is_admin(message.from_user.id):
-        await message.answer("⛔ У вас нет прав для добавления скамеров.")
-        return
+async def add_scammer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /add_scammer"""
+    if not db.is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ У вас нет прав для добавления скамеров.")
+        return ConversationHandler.END
     
-    args = message.text.split(maxsplit=1)
+    args = context.args
     
     if len(args) < 2:
-        await message.answer("❌ Укажите username скамера.\nПример: /add_scammer @username причина и пруфы")
-        return
+        await update.message.reply_text("❌ Укажите username скамера, причину и пруфы.\nПример: /add_scammer @username причина пруфы")
+        return ConversationHandler.END
     
-    text = args[1]
-    if "@" in text:
-        username = text.split()[0].replace("@", "")
-        rest = " ".join(text.split()[1:]) if len(text.split()) > 1 else ""
+    username = args[0].replace("@", "")
+    reason = args[1]
+    proof = " ".join(args[2:]) if len(args) > 2 else ""
+    
+    try:
+        user = await context.bot.get_chat(f"@{username}")
+        user_id = str(user.id)
         
-        try:
-            user = await bot.get_chat(f"@{username}")
-            user_id = str(user.id)
-            
-            await state.update_data(
-                scammer_user_id=user_id,
-                scammer_username=username,
-                scammer_reason_proof=rest
-            )
-            
-            if rest:
-                # Если причина и пруфы указаны сразу
-                parts = rest.split(" ", 1)
-                if len(parts) == 2:
-                    reason, proof = parts
-                    await process_scammer_info(message, user_id, username, reason, proof, state)
-                else:
-                    await message.answer("❌ Укажите причину и пруфы через пробел.\nПример: /add_scammer @username мошенничество https://proof.link")
-            else:
-                await message.answer(f"Введите причину для добавления @{username} как скамера:")
-                await state.set_state(AddScammerState.waiting_for_reason)
-                
-        except Exception as e:
-            await message.answer(f"❌ Не удалось найти пользователя @{username}")
-            logger.error(f"Ошибка поиска пользователя: {e}")
-    else:
-        await message.answer("❌ Укажите username через @.\nПример: /add_scammer @username причина пруфы")
+        if db.is_scammer(user_id):
+            await update.message.reply_text(f"❌ Пользователь @{username} уже есть в базе скамеров.")
+            return ConversationHandler.END
+        
+        if not proof:
+            context.user_data['scammer_info'] = {'user_id': user_id, 'username': username, 'reason': reason}
+            await update.message.reply_text(f"Введите пруфы для скамера @{username}:")
+            return WAITING_FOR_PROOF
+        
+        db.add_scammer(user_id, username, reason, proof, str(update.effective_user.id))
+        
+        await update.message.reply_text(
+            f"✅ Скамер @{username} добавлен в базу!\n"
+            f"Причина: {reason}\n"
+            f"Пруфы: {proof}"
+        )
+        
+        # Уведомляем главного администратора
+        if update.effective_user.id != MAIN_ADMIN_ID:
+            try:
+                await context.bot.send_message(
+                    MAIN_ADMIN_ID,
+                    f"🆕 Новый скамер добавлен:\n"
+                    f"👤 @{username}\n"
+                    f"🆔 {user_id}\n"
+                    f"📝 Причина: {reason}\n"
+                    f"🔗 Пруфы: {proof}\n"
+                    f"👨‍💻 Добавил: @{update.effective_user.username or 'N/A'}"
+                )
+            except:
+                pass
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Не удалось найти пользователя @{username}")
+        logger.error(f"Ошибка поиска пользователя: {e}")
+    
+    return ConversationHandler.END
 
-@router.message(AddScammerState.waiting_for_reason)
-async def process_scammer_reason(message: Message, state: FSMContext):
-    """Обработка причины для скамера"""
-    reason = message.text
-    data = await state.get_data()
+async def add_scammer_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получение пруфов для скамера"""
+    proof = update.message.text
+    scammer_info = context.user_data.get('scammer_info', {})
     
-    await state.update_data(scammer_reason=reason)
-    await message.answer("Теперь отправьте пруфы (ссылку или текст):")
-    await state.set_state(AddScammerState.waiting_for_proof)
-
-@router.message(AddScammerState.waiting_for_proof)
-async def process_scammer_proof(message: Message, state: FSMContext):
-    """Обработка пруфов для скамера"""
-    proof = message.text
-    data = await state.get_data()
+    if not scammer_info:
+        await update.message.reply_text("❌ Ошибка: информация о скамере не найдена.")
+        return ConversationHandler.END
     
-    user_id = data.get("scammer_user_id")
-    username = data.get("scammer_username")
-    reason = data.get("scammer_reason")
+    user_id = scammer_info['user_id']
+    username = scammer_info['username']
+    reason = scammer_info['reason']
     
-    await process_scammer_info(message, user_id, username, reason, proof, state)
-
-async def process_scammer_info(message: Message, user_id: str, username: str, reason: str, proof: str, state: FSMContext):
-    """Обработка информации о скамере"""
-    if db.is_scammer(user_id):
-        await message.answer(f"❌ Пользователь @{username} уже есть в базе скамеров.")
-        await state.clear()
-        return
+    db.add_scammer(user_id, username, reason, proof, str(update.effective_user.id))
     
-    db.add_scammer(user_id, username, reason, proof, str(message.from_user.id))
-    
-    await message.answer(
+    await update.message.reply_text(
         f"✅ Скамер @{username} добавлен в базу!\n"
         f"Причина: {reason}\n"
         f"Пруфы: {proof}"
     )
     
     # Уведомляем главного администратора
-    if message.from_user.id != MAIN_ADMIN_ID:
+    if update.effective_user.id != MAIN_ADMIN_ID:
         try:
-            await bot.send_message(
+            await context.bot.send_message(
                 MAIN_ADMIN_ID,
                 f"🆕 Новый скамер добавлен:\n"
                 f"👤 @{username}\n"
                 f"🆔 {user_id}\n"
                 f"📝 Причина: {reason}\n"
                 f"🔗 Пруфы: {proof}\n"
-                f"👨‍💻 Добавил: @{message.from_user.username or 'N/A'}"
+                f"👨‍💻 Добавил: @{update.effective_user.username or 'N/A'}"
             )
         except:
             pass
     
-    await state.clear()
+    return ConversationHandler.END
 
-@router.message(Command("del_scammer"))
-async def cmd_del_scammer(message: Message):
-    """Удалить скамера"""
-    if not db.is_admin(message.from_user.id):
-        await message.answer("⛔ У вас нет прав для удаления скамеров.")
+async def add_scammer_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка 'Добавить скамера'"""
+    await update.message.reply_text("Для добавления скамера используйте команду:\n/add_scammer @username причина пруфы")
+
+async def del_scammer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /del_scammer"""
+    if not db.is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ У вас нет прав для удаления скамеров.")
         return
     
-    args = message.text.split()
+    args = context.args
     
-    if len(args) != 2:
-        await message.answer("❌ Укажите username скамера.\nПример: /del_scammer @username")
+    if len(args) != 1:
+        await update.message.reply_text("❌ Укажите username скамера.\nПример: /del_scammer @username")
         return
     
-    username = args[1].replace("@", "")
+    username = args[0].replace("@", "")
     
     # Ищем скамера по username
     for user_id, scammer_info in db.scammers.items():
         if scammer_info.get("username") == username:
             db.remove_scammer(user_id)
-            await message.answer(f"✅ Скамер @{username} удален из базы.")
+            await update.message.reply_text(f"✅ Скамер @{username} удален из базы.")
             return
     
-    await message.answer(f"❌ Скамер @{username} не найден в базе.")
+    await update.message.reply_text(f"❌ Скамер @{username} не найден в базе.")
 
-@router.message(Command("add_garant"))
-async def cmd_add_garant(message: Message, state: FSMContext):
-    """Добавить гаранта"""
-    if not db.is_admin(message.from_user.id):
-        await message.answer("⛔ У вас нет прав для добавления гарантов.")
-        return
+async def add_garant_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /add_garant"""
+    if not db.is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ У вас нет прав для добавления гарантов.")
+        return ConversationHandler.END
     
-    args = message.text.split(maxsplit=1)
+    args = context.args
     
-    if len(args) < 2:
-        await message.answer("❌ Укажите username гаранта.\nПример: /add_garant @username ссылка_на_био ссылка_на_пруфы")
-        return
+    if len(args) < 3:
+        await update.message.reply_text("❌ Укажите username гаранта, ссылку на био и пруфы.\nПример: /add_garant @username ссылка_на_био ссылка_на_пруфы")
+        return ConversationHandler.END
     
-    text = args[1]
-    if "@" in text:
-        username = text.split()[0].replace("@", "")
-        rest = " ".join(text.split()[1:]) if len(text.split()) > 1 else ""
+    username = args[0].replace("@", "")
+    bio_link = args[1]
+    proof_link = args[2]
+    
+    try:
+        user = await context.bot.get_chat(f"@{username}")
+        user_id = str(user.id)
         
-        try:
-            user = await bot.get_chat(f"@{username}")
-            user_id = str(user.id)
-            
-            await state.update_data(
-                garant_user_id=user_id,
-                garant_username=username,
-                garant_info=rest
-            )
-            
-            if rest:
-                # Если информация указана сразу
-                parts = rest.split(" ", 1)
-                if len(parts) == 2:
-                    bio_link, proof_link = parts
-                    await process_garant_info(message, user_id, username, bio_link, proof_link, state)
-                else:
-                    await message.answer("❌ Укажите ссылку на био и пруфы через пробел.\nПример: /add_garant @username https://bio.link https://proof.link")
-            else:
-                await message.answer(f"Введите ссылку на био для гаранта @{username}:")
-                await state.set_state(AddGarantState.waiting_for_bio)
-                
-        except Exception as e:
-            await message.answer(f"❌ Не удалось найти пользователя @{username}")
-            logger.error(f"Ошибка поиска пользователя: {e}")
-    else:
-        await message.answer("❌ Укажите username через @.\nПример: /add_garant @username ссылка_на_био ссылка_на_пруфы")
-
-@router.message(AddGarantState.waiting_for_bio)
-async def process_garant_bio(message: Message, state: FSMContext):
-    """Обработка био для гаранта"""
-    bio_link = message.text
-    data = await state.get_data()
+        if db.is_garant(user_id):
+            await update.message.reply_text(f"❌ Пользователь @{username} уже есть в базе гарантов.")
+            return ConversationHandler.END
+        
+        db.add_garant(user_id, username, bio_link, proof_link, str(update.effective_user.id))
+        
+        await update.message.reply_text(
+            f"✅ Гарант @{username} добавлен в базу!\n"
+            f"Био: {bio_link}\n"
+            f"Пруфы: {proof_link}"
+        )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Не удалось найти пользователя @{username}")
+        logger.error(f"Ошибка поиска пользователя: {e}")
     
-    await state.update_data(garant_bio=bio_link)
-    await message.answer("Теперь отправьте ссылку на пруфы:")
-    await state.set_state(AddGarantState.waiting_for_proof)
+    return ConversationHandler.END
 
-@router.message(AddGarantState.waiting_for_proof)
-async def process_garant_proof(message: Message, state: FSMContext):
-    """Обработка пруфов для гаранта"""
-    proof_link = message.text
-    data = await state.get_data()
-    
-    user_id = data.get("garant_user_id")
-    username = data.get("garant_username")
-    bio_link = data.get("garant_bio")
-    
-    await process_garant_info(message, user_id, username, bio_link, proof_link, state)
+async def add_garant_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка 'Добавить гаранта'"""
+    await update.message.reply_text("Для добавления гаранта используйте команду:\n/add_garant @username ссылка_на_био ссылка_на_пруфы")
 
-async def process_garant_info(message: Message, user_id: str, username: str, bio_link: str, proof_link: str, state: FSMContext):
-    """Обработка информации о гаранте"""
-    if db.is_garant(user_id):
-        await message.answer(f"❌ Пользователь @{username} уже есть в базе гарантов.")
-        await state.clear()
+async def del_garant(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /del_garant"""
+    if not db.is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ У вас нет прав для удаления гарантов.")
         return
     
-    db.add_garant(user_id, username, bio_link, proof_link, str(message.from_user.id))
+    args = context.args
     
-    await message.answer(
-        f"✅ Гарант @{username} добавлен в базу!\n"
-        f"Био: {bio_link}\n"
-        f"Пруфы: {proof_link}"
-    )
-    
-    await state.clear()
-
-@router.message(Command("del_garant"))
-async def cmd_del_garant(message: Message):
-    """Удалить гаранта"""
-    if not db.is_admin(message.from_user.id):
-        await message.answer("⛔ У вас нет прав для удаления гарантов.")
+    if len(args) != 1:
+        await update.message.reply_text("❌ Укажите username гаранта.\nПример: /del_garant @username")
         return
     
-    args = message.text.split()
-    
-    if len(args) != 2:
-        await message.answer("❌ Укажите username гаранта.\nПример: /del_garant @username")
-        return
-    
-    username = args[1].replace("@", "")
+    username = args[0].replace("@", "")
     
     # Ищем гаранта по username
     for user_id, garant_info in db.guarantees.items():
         if garant_info.get("username") == username:
             db.remove_garant(user_id)
-            await message.answer(f"✅ Гарант @{username} удален из базы.")
+            await update.message.reply_text(f"✅ Гарант @{username} удален из базы.")
             return
     
-    await message.answer(f"❌ Гарант @{username} не найден в базе.")
+    await update.message.reply_text(f"❌ Гарант @{username} не найден в базе.")
 
-@router.message(Command("add_admin"))
-async def cmd_add_admin(message: Message):
-    """Добавить администратора"""
-    if message.from_user.id != MAIN_ADMIN_ID:
-        await message.answer("⛔ Только главный администратор может добавлять админов.")
+async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /add_admin"""
+    if update.effective_user.id != MAIN_ADMIN_ID:
+        await update.message.reply_text("⛔ Только главный администратор может добавлять админов.")
         return
     
-    args = message.text.split()
+    args = context.args
     
-    if len(args) != 2:
-        await message.answer("❌ Укажите username нового администратора.\nПример: /add_admin @username")
+    if len(args) != 1:
+        await update.message.reply_text("❌ Укажите username нового администратора.\nПример: /add_admin @username")
         return
     
-    username = args[1].replace("@", "")
+    username = args[0].replace("@", "")
     
     try:
-        user = await bot.get_chat(f"@{username}")
+        user = await context.bot.get_chat(f"@{username}")
         user_id = str(user.id)
         
         if db.is_admin(int(user_id)):
-            await message.answer(f"❌ Пользователь @{username} уже является администратором.")
+            await update.message.reply_text(f"❌ Пользователь @{username} уже является администратором.")
             return
         
-        db.add_admin(user_id, str(message.from_user.id))
+        db.add_admin(user_id, str(update.effective_user.id))
         
-        await message.answer(f"✅ Администратор @{username} добавлен!")
+        await update.message.reply_text(f"✅ Администратор @{username} добавлен!")
         
         # Уведомляем нового админа
         try:
-            await bot.send_message(
+            await context.bot.send_message(
                 user_id,
                 f"🎉 Поздравляем! Вы были назначены администратором бота Anti Scam!\n\n"
                 f"Теперь вы можете:\n"
@@ -898,52 +819,37 @@ async def cmd_add_admin(message: Message):
             pass
             
     except Exception as e:
-        await message.answer(f"❌ Не удалось найти пользователя @{username}")
+        await update.message.reply_text(f"❌ Не удалось найти пользователя @{username}")
         logger.error(f"Ошибка поиска пользователя: {e}")
 
-@router.message(F.text == "➕ Добавить скамера")
-async def add_scammer_button(message: Message):
-    """Кнопка добавления скамера"""
-    await cmd_add_scammer(message, None)
-
-@router.message(F.text == "➕ Добавить гаранта")
-async def add_garant_button(message: Message):
-    """Кнопка добавления гаранта"""
-    await cmd_add_garant(message, None)
-
-@router.message(F.text == "🗑 Удалить скамера")
-async def del_scammer_button(message: Message):
-    """Кнопка удаления скамера"""
-    await message.answer("Для удаления скамера используйте команду:\n/del_scammer @username")
-
-@router.message(F.text == "🗑 Удалить гаранта")
-async def del_garant_button(message: Message):
-    """Кнопка удаления гаранта"""
-    await message.answer("Для удаления гаранта используйте команду:\n/del_garant @username")
-
-@router.message(F.text == "👑 Добавить админа")
-async def add_admin_button(message: Message):
-    """Кнопка добавления админа"""
-    await message.answer("Для добавления администратора используйте команду:\n/add_admin @username")
-
-@router.message(F.text == "❌ Удалить админа")
-async def del_admin_button(message: Message):
-    """Кнопка удаления админа"""
-    if message.from_user.id != MAIN_ADMIN_ID:
-        await message.answer("⛔ Только главный администратор может удалять админов.")
+async def del_admin_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка 'Удалить админа'"""
+    if update.effective_user.id != MAIN_ADMIN_ID:
+        await update.message.reply_text("⛔ Только главный администратор может удалять админов.")
         return
-    await message.answer("Для удаления администратора используйте команду:\n/del_admin @username\n\n⚠️ Эта команда будет доступна в будущих обновлениях.")
+    await update.message.reply_text("Для удаления администратора используйте команду:\n/del_admin @username\n\n⚠️ Эта команда будет доступна в будущих обновлениях.")
+
+async def del_scammer_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка 'Удалить скамера'"""
+    await update.message.reply_text("Для удаления скамера используйте команду:\n/del_scammer @username")
+
+async def del_garant_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка 'Удалить гаранта'"""
+    await update.message.reply_text("Для удаления гаранта используйте команду:\n/del_garant @username")
+
+async def add_admin_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка 'Добавить админа'"""
+    await update.message.reply_text("Для добавления администратора используйте команду:\n/add_admin @username")
 
 # ========== КОМАНДЫ МОДЕРАЦИИ ЧАТА ==========
-@router.message(Command("open"))
-async def cmd_open_chat(message: Message):
-    """Открыть чат"""
-    if not db.is_admin(message.from_user.id) and message.chat.type == "private":
-        await message.answer("⛔ Только администраторы могут использовать эту команду.")
+async def open_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /open"""
+    if not db.is_admin(update.effective_user.id) and update.effective_chat.type == "private":
+        await update.message.reply_text("⛔ Только администраторы могут использовать эту команду.")
         return
     
-    if message.chat.type != "private":
-        chat_id = str(message.chat.id)
+    if update.effective_chat.type != "private":
+        chat_id = str(update.effective_chat.id)
         
         if chat_id not in db.chat_settings:
             db.chat_settings[chat_id] = {"is_open": True, "warns": {}}
@@ -951,17 +857,16 @@ async def cmd_open_chat(message: Message):
             db.chat_settings[chat_id]["is_open"] = True
         
         db.save_chat_settings()
-        await message.answer("✅ Чат открыт для общения.")
+        await update.message.reply_text("✅ Чат открыт для общения.")
 
-@router.message(Command("close"))
-async def cmd_close_chat(message: Message):
-    """Закрыть чат"""
-    if not db.is_admin(message.from_user.id) and message.chat.type == "private":
-        await message.answer("⛔ Только администраторы могут использовать эту команду.")
+async def close_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /close"""
+    if not db.is_admin(update.effective_user.id) and update.effective_chat.type == "private":
+        await update.message.reply_text("⛔ Только администраторы могут использовать эту команду.")
         return
     
-    if message.chat.type != "private":
-        chat_id = str(message.chat.id)
+    if update.effective_chat.type != "private":
+        chat_id = str(update.effective_chat.id)
         
         if chat_id not in db.chat_settings:
             db.chat_settings[chat_id] = {"is_open": False, "warns": {}}
@@ -969,64 +874,61 @@ async def cmd_close_chat(message: Message):
             db.chat_settings[chat_id]["is_open"] = False
         
         db.save_chat_settings()
-        await message.answer("🚫 Чат закрыт для общения.")
+        await update.message.reply_text("🚫 Чат закрыт для общения.")
 
-@router.message(Command("warn"))
-async def cmd_warn(message: Message, state: FSMContext):
-    """Выдать предупреждение"""
-    if not db.is_admin(message.from_user.id) and message.chat.type == "private":
-        await message.answer("⛔ Только администраторы могут использовать эту команду.")
+async def warn_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /warn"""
+    if not db.is_admin(update.effective_user.id) and update.effective_chat.type == "private":
+        await update.message.reply_text("⛔ Только администраторы могут использовать эту команду.")
         return
     
-    if message.chat.type == "private":
-        await message.answer("❌ Эта команда работает только в группах/чатах.")
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("❌ Эта команда работает только в группах/чатах.")
         return
     
-    args = message.text.split()
+    args = context.args
     
-    if len(args) < 2:
-        await message.answer("❌ Укажите username пользователя.\nПример: /warn @username")
+    if len(args) < 1:
+        await update.message.reply_text("❌ Укажите username пользователя.\nПример: /warn @username")
         return
     
-    username = args[1].replace("@", "")
+    username = args[0].replace("@", "")
     
     try:
         # Пытаемся найти пользователя
-        user = await bot.get_chat(f"@{username}")
-        await state.update_data(warn_user_id=user.id, warn_username=username)
-        await message.answer(f"Введите причину предупреждения для @{username}:")
-        await state.set_state(ChatManagementState.waiting_for_duration)
+        user = await context.bot.get_chat(f"@{username}")
+        await update.message.reply_text(f"✅ Пользователю @{username} выдано предупреждение.")
     except:
-        await message.answer(f"❌ Не удалось найти пользователя @{username}")
+        await update.message.reply_text(f"❌ Не удалось найти пользователя @{username}")
 
-@router.message(Command("mut"))
-async def cmd_mut(message: Message):
-    """Замутить пользователя"""
-    if not db.is_admin(message.from_user.id) and message.chat.type == "private":
-        await message.answer("⛔ Только администраторы могут использовать эту команду.")
+async def mut_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /mut"""
+    if not db.is_admin(update.effective_user.id) and update.effective_chat.type == "private":
+        await update.message.reply_text("⛔ Только администраторы могут использовать эту команду.")
         return
     
-    if message.chat.type == "private":
-        await message.answer("❌ Эта команда работает только в группах/чатах.")
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("❌ Эта команда работает только в группах/чатах.")
         return
     
-    args = message.text.split()
+    args = context.args
     
     if len(args) < 2:
-        await message.answer("❌ Укажите username пользователя.\nПример: /mut @username 60 (минут)")
+        await update.message.reply_text("❌ Укажите username пользователя и время в минутах.\nПример: /mut @username 60")
         return
     
-    if len(args) == 2:
-        username = args[1].replace("@", "")
-        await message.answer(f"Введите время мута в минутах для @{username}:\nПример: 60 (на 1 час)")
-    elif len(args) == 3:
-        username = args[1].replace("@", "")
-        try:
-            minutes = int(args[2])
-            # Здесь должна быть логика мута в группе
-            await message.answer(f"✅ Пользователь @{username} замучен на {minutes} минут.")
-        except:
-            await message.answer("❌ Укажите корректное время в минутах.")
+    username = args[0].replace("@", "")
+    
+    try:
+        minutes = int(args[1])
+        await update.message.reply_text(f"✅ Пользователь @{username} замучен на {minutes} минут.")
+    except:
+        await update.message.reply_text("❌ Укажите корректное время в минутах.")
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена операции"""
+    await update.message.reply_text("Операция отменена.")
+    return ConversationHandler.END
 
 # ========== FLASK РОУТЫ ==========
 @app.route('/')
@@ -1043,13 +945,6 @@ def index():
         }
     })
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """Вебхук для Telegram"""
-    update = types.Update(**request.json)
-    asyncio.run(dp._process_update(update))
-    return jsonify({"status": "ok"})
-
 @app.route('/stats')
 def stats_api():
     """API статистики"""
@@ -1065,42 +960,89 @@ def photos_api():
     """API с ID фото"""
     return jsonify(PHOTOS)
 
-# ========== ЗАПУСК БОТА ==========
-async def start_bot():
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Вебхук для Telegram (если нужно)"""
+    return jsonify({"status": "webhook_not_used"})
+
+# ========== ОСНОВНАЯ ФУНКЦИЯ ==========
+def main():
     """Запуск бота"""
-    logger.info("Запуск бота Anti Scam...")
+    # Создаем приложение
+    application = Application.builder().token(API_TOKEN).build()
     
-    # Удаляем вебхук и запускаем polling
-    await bot.delete_webhook(drop_pending_updates=True)
+    # Обработчики команд
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("check", check_command))
+    application.add_handler(CommandHandler("id_photo", id_photo))
+    application.add_handler(CommandHandler("add_scammer", add_scammer_command))
+    application.add_handler(CommandHandler("del_scammer", del_scammer))
+    application.add_handler(CommandHandler("add_garant", add_garant_command))
+    application.add_handler(CommandHandler("del_garant", del_garant))
+    application.add_handler(CommandHandler("add_admin", add_admin_command))
+    application.add_handler(CommandHandler("open", open_chat))
+    application.add_handler(CommandHandler("close", close_chat))
+    application.add_handler(CommandHandler("warn", warn_user))
+    application.add_handler(CommandHandler("mut", mut_user))
     
-    # Уведомляем администратора о запуске
-    try:
-        await bot.send_message(
-            ADMIN_ID,
-            f"🤖 Бот Anti Scam запущен!\n"
-            f"⏰ Время: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"🕵️ Скамеров в базе: {len(db.scammers)}\n"
-            f"🤝 Гарантов в базе: {len(db.guarantees)}\n\n"
-            f"📸 ID фото доступны по команде /id_photo"
-        )
-    except Exception as e:
-        logger.error(f"Не удалось отправить сообщение администратору: {e}")
+    # ConversationHandler для добавления скамера
+    conv_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.TEXT & filters.Regex('^➕ Добавить скамера$'), add_scammer_button)],
+        states={
+            WAITING_FOR_PROOF: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_scammer_proof)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)]
+    )
+    application.add_handler(conv_handler)
+    
+    # Обработчики текстовых сообщений (кнопки)
+    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^👤 Мой профиль$'), my_profile))
+    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^📋 Список гарантов$'), guarantees_list))
+    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^🛠 Команды бота$'), bot_commands))
+    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^👨‍💻 Админ панель$'), admin_panel))
+    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^📊 Статистика$'), stats))
+    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^🔙 Назад$'), back_to_main))
+    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^🆔 ID фото$'), id_photo_button))
+    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^➕ Добавить гаранта$'), add_garant_button))
+    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^🗑 Удалить скамера$'), del_scammer_button))
+    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^🗑 Удалить гаранта$'), del_garant_button))
+    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^👑 Добавить админа$'), add_admin_button))
+    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^❌ Удалить админа$'), del_admin_button))
+    
+    # Обработчик инлайн кнопок
+    application.add_handler(CallbackQueryHandler(button_callback))
     
     # Запускаем бота
-    await dp.start_polling(bot)
-
-def run_flask():
-    """Запуск Flask сервера"""
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    logger.info("Бот Anti Scam запущен!")
+    
+    # Уведомляем администратора о запуске
+    async def notify_admin():
+        try:
+            await application.bot.send_message(
+                ADMIN_ID,
+                f"🤖 Бот Anti Scam запущен!\n"
+                f"⏰ Время: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"🕵️ Скамеров в базе: {len(db.scammers)}\n"
+                f"🤝 Гарантов в базе: {len(db.guarantees)}\n\n"
+                f"📸 ID фото доступны по команде /id_photo"
+            )
+        except Exception as e:
+            logger.error(f"Не удалось отправить сообщение администратору: {e}")
+    
+    # Запускаем уведомление администратора
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
+    # Импортируем threading для запуска Flask в отдельном потоке
+    import threading
+    
     # Запускаем Flask в отдельном потоке
-    flask_thread = Thread(target=run_flask)
+    flask_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False))
     flask_thread.daemon = True
     flask_thread.start()
     
     # Запускаем бота
     try:
-        asyncio.run(start_bot())
+        main()
     except KeyboardInterrupt:
         logger.info("Бот остановлен")
