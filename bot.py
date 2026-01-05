@@ -198,13 +198,13 @@ conn.commit()
 print("✅ База данных инициализирована")
 
 # File ID для фото (ОБНОВЛЕННЫЕ ID!)
-PHOTO_START = "AgACAgIAAxkBAAIDZWlawvkQNkP8MXd2rJD_3rSAjRM3AAKREGsbA2nYSl4aZbvY2AnWAQADAgADeQADOAQ"
-PHOTO_REGULAR = "AgACAgIAAxkBAAMUaVq_Lrrkjs1rNCv8Cxt_EjKIX_UAArkLaxs0uchK4LJUKE0hwKcBAAMCAAN5AAM4BA"
-PHOTO_SCAMMER = "AgACAgIAAxkBAAIDaWlawx_urljf74qS6leP477MBxt4AAIED2sby6zYSgtMTANBvgeiAQADAgADeQADOAQ"
-PHOTO_GARANT = "AgACAgIAAxkBAAIDWGlawdetyw8Bxtr4JE-mTxOX2l3BAAItD2sby6zYSlJ4rr-r8kTbAQADAgADdwADOAQ"
-PHOTO_USER_PROFILE = "AgACAgIAAxkBAAIDW2lawhVT7Hymkx40VVfJXSP_GopBAAK5C2sbNLnISs-ffVUmfUjhAQADAgADeQADOAQ"
-PHOTO_USER_SCAMMER = "AgACAgIAAxkBAAIDaWlawx_urljf74qS6leP477MBxt4AAIED2sby6zYSgtMTANBvgeiAQADAgADeQADOAQ"
-PHOTO_ADMIN = "AgACAgIAAxkBAAIEFGlbjqn-vN_A6ZRavzUhi8nUr-wDAAIHDWsbA2ngSia7mZfLixZ6AQADAgADeQADOAQ"
+PHOTO_START = "AgACAgIAAxkBAAMDaVuXPAZ_gMcF_masVAbsYOKeHzcAAjYNaxsDaeBKo3RQYRT6stkBAAMCAAN5AAM4BA"
+PHOTO_REGULAR = "AgACAgIAAxkBAAMHaVuXyRaIsterNpb8m4S6OCNs4pAAAkkPaxt7wNlKFbDPVp3lyU0BAAMCAAN5AAM4BA"
+PHOTO_SCAMMER = "AgACAgIAAxkBAAMKaVuX0DTYvXOoh6L9-LQYZ6tXD4IAAkoPaxt7wNlKXE2XwnPDiyIBAAMCAAN5AAM4BA"
+PHOTO_GARANT = "AgACAgIAAxkBAAMNaVuX0Rv_6GJVFb8ulnhTb9UCxWUAAjwNaxsDaeBK8uKoaFgkFVEBAAMCAAN5AAM4BA"
+PHOTO_USER_PROFILE = "AgACAgIAAxkBAAMHaVuXyRaIsterNpb8m4S6OCNs4pAAAkkPaxt7wNlKFbDPVp3lyU0BAAMCAAN5AAM4BA"
+PHOTO_USER_SCAMMER = "AgACAgIAAxkBAAMKaVuX0DTYvXOoh6L9-LQYZ6tXD4IAAkoPaxt7wNlKXE2XwnPDiyIBAAMCAAN5AAM4BA"
+PHOTO_ADMIN = "AgACAgIAAxkBAAMQaVuX1K1bJLDWomL_T1ubUBQdnVYAAgcNaxsDaeBKrAABfnFPRUbCAQADAgADeQADOAQ"
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def get_welcome_inline_keyboard():
@@ -787,7 +787,7 @@ async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (user_id, chat.id, user.id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         )
         
-        # Обновляем статистику администратора
+        # Обновляем статистики администратора
         update_admin_stats(user.id, "admin")
         
         conn.commit()
@@ -1090,6 +1090,7 @@ def main():
         print("• /add_admin @username - добавить администратора чата")
         print("• /garants - список гарантов с пруфами")
         print("\n📸 ID ФОТО ДЛЯ ПРОВЕРКИ:")
+        print(f"• Приветствие: {PHOTO_START[:30]}...")
         print(f"• Администратор: {PHOTO_ADMIN[:30]}...")
         print(f"• Гарант: {PHOTO_GARANT[:30]}...")
         print(f"• Скамер: {PHOTO_SCAMMER[:30]}...")
