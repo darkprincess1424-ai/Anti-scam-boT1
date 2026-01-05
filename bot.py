@@ -33,6 +33,15 @@ ADMINS_FILE = 'admins.json'
 USER_STATS_FILE = 'user_stats.json'
 CHAT_SETTINGS_FILE = 'chat_settings.json'
 
+# ID фото для разных статусов
+PHOTOS = {
+    'start': 'AgACAgIAAxkBAAMDaVuXPAZ_gMcF_masVAbsYOKeHzcAAjYNaxsDaeBKo3RQYRT6stkBAAMCAAN5AAM4BA',
+    'scammer': 'AgACAgIAAxkBAAMKaVuX0DTYvXOoh6L9-LQYZ6tXD4IAAkoPaxt7wNlKXE2XwnPDiyIBAAMCAAN5AAM4BA',
+    'garant': 'AgACAgIAAxkBAAMNaVuX0Rv_6GJVFb8ulnhTb9UCxWUAAjwNaxsDaeBK8uKoaFgkFVEBAAMCAAN5AAM4BA',
+    'user': 'AgACAgIAAxkBAAMHaVuXyRaIsterNpb8m4S6OCNs4pAAAkkPaxt7wNlKFbDPVp3lyU0BAAMCAAN5AAM4BA',
+    'admin': 'AgACAgIAAxkBAAMQaVuX1K1bJLDWomL_T1ubUBQdnVYAAgcNaxsDaeBKrAABfnFPRUbCAQADAgADeQADOAQ'
+}
+
 # Инициализация Flask
 app = Flask(__name__)
 
@@ -239,7 +248,10 @@ class ChatManagementState(StatesGroup):
 
 # ========== КЛАВИАТУРЫ ==========
 def get_main_keyboard(user_id: int = None) -> ReplyKeyboardMarkup:
-    """Основная клавиатура"""
+    """Основная клавиатура (только для личных сообщений)"""
+    if user_id is None:
+        return ReplyKeyboardRemove()
+    
     keyboard = []
     
     if user_id and db.is_admin(user_id):
@@ -263,7 +275,7 @@ def get_admin_keyboard() -> ReplyKeyboardMarkup:
         [KeyboardButton(text="➕ Добавить скамера"), KeyboardButton(text="➕ Добавить гаранта")],
         [KeyboardButton(text="🗑 Удалить скамера"), KeyboardButton(text="🗑 Удалить гаранта")],
         [KeyboardButton(text="👑 Добавить админа"), KeyboardButton(text="❌ Удалить админа")],
-        [KeyboardButton(text="🔙 Назад")]
+        [KeyboardButton(text="🆔 ID фото"), KeyboardButton(text="🔙 Назад")]
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
@@ -298,10 +310,10 @@ def get_check_result_keyboard(user_id: str = None, username: str = None) -> Inli
             )
         ])
     elif user_id:
-        # Если нет username, можно попробовать создать deep link
+        # Если нет username, показываем кнопку с ID
         keyboard.append([
             InlineKeyboardButton(
-                text="🔗 ID профиля",
+                text="🆔 ID профиля",
                 callback_data=f"show_id_{user_id}"
             )
         ])
@@ -312,8 +324,6 @@ def get_check_result_keyboard(user_id: str = None, username: str = None) -> Inli
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     """Команда /start"""
-    photo_id = "AgACAgIAAxkBAAMDaVuXPAZ_gMcF_masVAbsYOKeHzcAAjYNaxsDaeBKo3RQYRT6stkBAAMCAAN5AAM4BA"
-    
     start_text = """
 Anti Scam - начинающий проект, который будет помогать людям не попадатся на скам и на сомнительные услуги.
 
@@ -327,11 +337,12 @@ Anti Scam - начинающий проект, который будет пом�
 """
     
     await message.answer_photo(
-        photo=photo_id,
+        photo=PHOTOS['start'],
         caption=start_text,
         reply_markup=get_inline_start_keyboard()
     )
     
+    # Показываем клавиатуру только в личных сообщениях
     if message.chat.type == "private":
         await message.answer(
             "Добро пожаловать! Используйте кнопки ниже для навигации:",
@@ -356,7 +367,7 @@ async def cmd_guarantees_list(message: Message):
     
     for i, garant in enumerate(guarantees, 1):
         username = garant.get('username', 'N/A')
-        proof_link = garant.get('proof_link', 'N/A')
+        proof_link = garant.get('proof_link', 'Нет пруфов')
         
         response += f"{i}. @{username}\n"
         response += f"   🔗 Пруфы: {proof_link}\n\n"
@@ -367,7 +378,7 @@ async def cmd_guarantees_list(message: Message):
 async def cmd_bot_commands(message: Message):
     """Список команд бота"""
     commands_text = """
-🤖 <b>Команды бота:</b>
+🤖 <b>Команды бота Anti Scam:</b>
 
 <b>Для всех пользователей:</b>
 /start - Запустить бота
@@ -376,10 +387,10 @@ async def cmd_bot_commands(message: Message):
 /check (в ответ на сообщение) - Проверить пользователя
 
 <b>Для администраторов:</b>
-/add_garant @username - Добавить гаранта
+/add_garant @username ссылка_на_био ссылка_на_пруфы - Добавить гаранта
 /del_garant @username - Удалить гаранта
 /add_admin @username - Добавить администратора
-/add_scammer @username - Добавить скамера
+/add_scammer @username причина пруфы - Добавить скамера
 /del_scammer @username - Удалить скамера
 
 <b>Для модерации чата:</b>
@@ -387,9 +398,45 @@ async def cmd_bot_commands(message: Message):
 /close - Закрыть чат
 /warn @username - Выдать предупреждение
 /mut @username - Замутить пользователя
+
+<b>Специальные команды:</b>
+/id_photo - Показать ID всех фото бота
 """
     
     await message.answer(commands_text, parse_mode="HTML")
+
+@router.message(Command("id_photo"))
+async def cmd_id_photo(message: Message):
+    """Показать ID фото"""
+    if not db.is_admin(message.from_user.id):
+        await message.answer("⛔ Эта команда только для администраторов.")
+        return
+    
+    photo_info = """
+🖼 <b>ID фото бота:</b>
+
+<b>Стартовое фото:</b>
+<code>{start}</code>
+
+<b>Скамер:</b>
+<code>{scammer}</code>
+
+<b>Гарант:</b>
+<code>{garant}</code>
+
+<b>Обычный пользователь:</b>
+<code>{user}</code>
+
+<b>Администратор:</b>
+<code>{admin}</code>
+""".format(**PHOTOS)
+    
+    await message.answer(photo_info, parse_mode="HTML")
+
+@router.message(F.text == "🆔 ID фото")
+async def cmd_id_photo_button(message: Message):
+    """Кнопка ID фото"""
+    await cmd_id_photo(message)
 
 @router.message(F.text == "👨‍💻 Админ панель")
 async def cmd_admin_panel(message: Message):
@@ -482,7 +529,7 @@ async def check_user_profile(message: Message, user_id: str, username: str = Non
     # Определяем статус пользователя
     if db.is_scammer(user_id):
         # Скамер
-        photo_id = "AgACAgIAAxkBAAMKaVuX0DTYvXOoh6L9-LQYZ6tXD4IAAkoPaxt7wNlKXE2XwnPDiyIBAAMCAAN5AAM4BA"
+        photo_id = PHOTOS['scammer']
         scammer_info = db.get_scammer_info(user_id)
         
         response = f"""🕵️ᴜsᴇʀ: @{username if username else 'unknown'}
@@ -505,7 +552,7 @@ async def check_user_profile(message: Message, user_id: str, username: str = Non
         
     elif db.is_garant(user_id):
         # Гарант
-        photo_id = "AgACAgIAAxkBAAMNaVuX0Rv_6GJVFb8ulnhTb9UCxWUAAjwNaxsDaeBK8uKoaFgkFVEBAAMCAAN5AAM4BA"
+        photo_id = PHOTOS['garant']
         garant_info = db.get_garant_info(user_id)
         
         response = f"""🕵️ᴜsᴇʀ: @{username if username else 'unknown'}
@@ -525,7 +572,7 @@ async def check_user_profile(message: Message, user_id: str, username: str = Non
         
     elif db.is_admin(int(user_id)):
         # Администратор
-        photo_id = "AgACAgIAAxkBAAMQaVuX1K1bJLDWomL_T1ubUBQdnVYAAgcNaxsDaeBKrAABfnFPRUbCAQADAgADeQADOAQ"
+        photo_id = PHOTOS['admin']
         admin_info = db.get_admin_info(user_id)
         scammer_count = db.get_scammers_count(user_id)
         
@@ -544,7 +591,7 @@ async def check_user_profile(message: Message, user_id: str, username: str = Non
         
     else:
         # Обычный пользователь
-        photo_id = "AgACAgIAAxkBAAMHaVuXyRaIsterNpb8m4S6OCNs4pAAAkkPaxt7wNlKFbDPVp3lyU0BAAMCAAN5AAM4BA"
+        photo_id = PHOTOS['user']
         
         response = f"""🕵️ᴜsᴇʀ: @{username if username else 'unknown'}
 🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
@@ -710,7 +757,7 @@ async def cmd_add_garant(message: Message, state: FSMContext):
     args = message.text.split(maxsplit=1)
     
     if len(args) < 2:
-        await message.answer("❌ Укажите username гаранта.\nПример: /add_garant @username (ссылка на био и пруфы)")
+        await message.answer("❌ Укажите username гаранта.\nПример: /add_garant @username ссылка_на_био ссылка_на_пруфы")
         return
     
     text = args[1]
@@ -842,8 +889,8 @@ async def cmd_add_admin(message: Message):
                 user_id,
                 f"🎉 Поздравляем! Вы были назначены администратором бота Anti Scam!\n\n"
                 f"Теперь вы можете:\n"
-                f"• Добавлять скамеров командой /add_scammer\n"
-                f"• Добавлять гарантов командой /add_garant\n"
+                f"• Добавлять скамеров командой /add_scammer @username причина пруфы\n"
+                f"• Добавлять гарантов командой /add_garant @username\n"
                 f"• Использовать админ панель через кнопку '👨‍💻 Админ панель'\n\n"
                 f"Используйте команду /help для просмотра всех возможностей."
             )
@@ -987,6 +1034,8 @@ def index():
     return jsonify({
         "status": "ok",
         "bot": "AntiScamBot",
+        "version": "1.0",
+        "admin_id": ADMIN_ID,
         "stats": {
             "scammers": len(db.scammers),
             "guarantees": len(db.guarantees),
@@ -1011,6 +1060,11 @@ def stats_api():
         "total_searches": sum(db.user_stats.get(user_id, {}).get("search_count", 0) for user_id in db.user_stats)
     })
 
+@app.route('/photos')
+def photos_api():
+    """API с ID фото"""
+    return jsonify(PHOTOS)
+
 # ========== ЗАПУСК БОТА ==========
 async def start_bot():
     """Запуск бота"""
@@ -1026,7 +1080,8 @@ async def start_bot():
             f"🤖 Бот Anti Scam запущен!\n"
             f"⏰ Время: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"🕵️ Скамеров в базе: {len(db.scammers)}\n"
-            f"🤝 Гарантов в базе: {len(db.guarantees)}"
+            f"🤝 Гарантов в базе: {len(db.guarantees)}\n\n"
+            f"📸 ID фото доступны по команде /id_photo"
         )
     except Exception as e:
         logger.error(f"Не удалось отправить сообщение администратору: {e}")
