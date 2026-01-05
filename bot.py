@@ -1069,7 +1069,7 @@ def main():
         # Дополнительные команды для админа
         application.add_handler(CommandHandler("broadcast", broadcast_command))
         
-        # Обработчики
+        # Обработчики текстовых сообщений (ВАЖНО: добавляется ПОСЛЕ всех команд!)
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
         
         print("\n" + "="*50)
