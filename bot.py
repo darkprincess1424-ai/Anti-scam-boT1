@@ -238,6 +238,7 @@ def get_admin_reply_keyboard():
     keyboard = [
         ["➕ Добавить гаранта", "➖ Удалить гаранта"],
         ["➕ Добавить скамера", "➖ Удалить скамера"],
+        ["➕ Добавить админа", "➖ Удалить админа"],
         ["📊 Статистика", "⬅️ На главную"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
@@ -259,6 +260,31 @@ def is_chat_admin(user_id, chat_id):
 def can_manage_chat(user_id, chat_id):
     """Проверка, может ли пользователь управлять чатом"""
     return is_global_admin(user_id) or is_chat_admin(user_id, chat_id)
+
+def add_chat_admin_to_db(user_id, added_by=ADMIN_ID, chat_id=0):
+    """Добавить администратора в базу данных"""
+    try:
+        cursor.execute(
+            """INSERT INTO chat_admins (user_id, chat_id, added_by, added_date) 
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id, chat_id) DO NOTHING""",
+            (user_id, chat_id, added_by, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении администратора: {e}")
+        return False
+
+def remove_chat_admin_from_db(user_id, chat_id=0):
+    """Удалить администратора из базы данных"""
+    try:
+        cursor.execute("DELETE FROM chat_admins WHERE user_id = ? AND chat_id = ?", (user_id, chat_id))
+        conn.commit()
+        return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"Ошибка при удалении администратора: {e}")
+        return False
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ ПРЕДОТВРАЩЕНИЯ ДУБЛИРОВАНИЯ ==========
 last_message_time = {}
@@ -541,21 +567,141 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_main_reply_keyboard(user.id, update.effective_chat.type)
         )
 
-# ========== УЛУЧШЕННЫЕ АДМИН КОМАНДЫ ==========
-async def add_scammer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ========== КОМАНДЫ ДЛЯ АДМИНИСТРАТОРОВ ==========
+async def add_admin_global_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Глобальная команда для добавления администратора (только для главного админа)"""
     if not check_message_cooldown(update.effective_user.id):
         return
     
     user = update.effective_user
-    chat = update.effective_chat
     
     # Проверяем права
-    if not can_manage_chat(user.id, chat.id):
+    if not is_global_admin(user.id):
+        await update.message.reply_text("❌ Только глобальный администратор может добавлять админов!")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Использование: /add_admin @username\nПример: /add_admin @username123")
+        return
+    
+    target_username = context.args[0].replace('@', '')
+    target_user_id = hash(target_username) % 1000000
+    
+    # Проверяем, не является ли уже админом
+    if is_chat_admin(target_user_id, 0):
+        await update.message.reply_text(f"❌ @{target_username} уже является администратором!")
+        return
+    
+    # Добавляем в базу
+    if add_chat_admin_to_db(target_user_id, user.id, 0):
+        # Обновляем статистику
+        update_admin_stats(user.id, "admin")
+        
+        await update.message.reply_text(
+            f"✅ @{target_username} добавлен как глобальный администратор!\n\n"
+            f"👤 Добавил: {user.first_name}\n"
+            f"🕐 Время: {datetime.now().strftime('%H:%M:%S')}\n\n"
+            f"🛡️ Теперь этот пользователь может:\n"
+            f"• Добавлять скамеров (/add_scammer)\n"
+            f"• Удалять скамеров (/del_scammer)\n"
+            f"• Просматривать статистику (/stats)\n"
+            f"• Управлять чатами (/add_chat_admin, /del_chat_admin)"
+        )
+    else:
+        await update.message.reply_text(f"❌ Ошибка при добавлении администратора @{target_username}")
+
+async def del_admin_global_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Глобальная команда для удаления администратора (только для главного админа)"""
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
+    user = update.effective_user
+    
+    # Проверяем права
+    if not is_global_admin(user.id):
+        await update.message.reply_text("❌ Только глобальный администратор может удалять админов!")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Использование: /del_admin @username\nПример: /del_admin @username123")
+        return
+    
+    target_username = context.args[0].replace('@', '')
+    target_user_id = hash(target_username) % 1000000
+    
+    # Проверяем, является ли админом
+    if not is_chat_admin(target_user_id, 0):
+        await update.message.reply_text(f"❌ @{target_username} не является администратором!")
+        return
+    
+    # Удаляем из базы
+    if remove_chat_admin_from_db(target_user_id, 0):
+        await update.message.reply_text(f"✅ @{target_username} удален из администраторов!")
+    else:
+        await update.message.reply_text(f"❌ Ошибка при удалении администратора @{target_username}")
+
+async def list_admins_global_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Список всех администраторов"""
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
+    user = update.effective_user
+    
+    # Проверяем права
+    if not is_global_admin(user.id):
+        await update.message.reply_text("❌ Только глобальный администратор может просматривать список админов!")
+        return
+    
+    try:
+        cursor.execute(
+            "SELECT user_id, added_by, added_date, added_scammers FROM chat_admins WHERE chat_id = 0 ORDER BY added_date"
+        )
+        chat_admins = cursor.fetchall()
+        
+        global_admin_info = f"👑 Глобальный администратор: ID {ADMIN_ID} (@SAGYN_OFFICIAL)\n"
+        
+        if chat_admins:
+            admins_list = []
+            for admin in chat_admins:
+                user_id, added_by, added_date, added_scammers = admin
+                admins_list.append(f"• ID: {user_id} (добавил {added_scammers} скамеров, добавлен {added_date[:10]})")
+            
+            response = (
+                f"📋 Глобальные администраторы бота:\n\n"
+                f"{global_admin_info}\n"
+                f"👥 Администраторы ({len(chat_admins)}):\n"
+                + "\n".join(admins_list) +
+                f"\n\n📊 Всего администраторов: {len(chat_admins) + 1}"
+            )
+        else:
+            response = (
+                f"📋 Глобальные администраторы бота:\n\n"
+                f"{global_admin_info}\n"
+                f"👥 Администраторы: Нет\n\n"
+                f"📊 Всего администраторов: 1 (только глобальный)"
+            )
+        
+        await update.message.reply_text(response)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в list_admins_global_command: {e}")
+        await update.message.reply_text("❌ Произошла ошибка при получении списка администраторов!")
+
+# ========== КОМАНДЫ ДЛЯ УПРАВЛЕНИЯ СКАМЕРАМИ (доступны админам) ==========
+async def add_scammer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавить скамера (доступно админам)"""
+    if not check_message_cooldown(update.effective_user.id):
+        return
+    
+    user = update.effective_user
+    
+    # Проверяем права - теперь админы тоже могут добавлять скамеров
+    if not can_manage_chat(user.id, 0):
         await update.message.reply_text("❌ У вас нет прав для добавления скамеров!")
         return
     
     if len(context.args) < 2:
-        await update.message.reply_text("Использование: /add_scammer @username причина_заноса\nПример: /add_scammer @username Скам 1000 руб")
+        await update.message.reply_text("Использование: /add_scammer @username причина_заноса [доказательства]\nПример: /add_scammer @username Скам 1000 руб https://t.me/proofs")
         return
     
     username = context.args[0].replace('@', '')
@@ -568,7 +714,7 @@ async def add_scammer_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             VALUES (?, ?, 1, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET 
             scam_count = scam_count + 1,
-            proofs = proofs || '\n' || excluded.proofs,
+            proofs = COALESCE(proofs, '') || '\n' || excluded.proofs,
             reason = excluded.reason""",
             (hash(username) % 1000000, username, proofs, user.id, 
              datetime.now().strftime("%Y-%m-%d %H:%M:%S"), reason, user.id)
@@ -577,11 +723,12 @@ async def add_scammer_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Обновляем статистику администратора
         update_admin_stats(user.id, "scammer")
         
-        # Обновляем статистику в chat_admins если это админ чата
-        cursor.execute(
-            "UPDATE chat_admins SET added_scammers = added_scammers + 1 WHERE user_id = ?",
-            (user.id,)
-        )
+        # Обновляем статистику в chat_admins если это админ
+        if is_chat_admin(user.id, 0):
+            cursor.execute(
+                "UPDATE chat_admins SET added_scammers = added_scammers + 1 WHERE user_id = ? AND chat_id = 0",
+                (user.id,)
+            )
         
         conn.commit()
         
@@ -600,14 +747,15 @@ async def add_scammer_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("❌ Произошла ошибка при добавлении скамера!")
 
 async def del_scammer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удалить скамера (доступно админам)"""
     if not check_message_cooldown(update.effective_user.id):
         return
     
     user = update.effective_user
     
-    # Проверяем права
-    if not is_global_admin(user.id):
-        await update.message.reply_text("❌ Только глобальный администратор может удалять скамеров!")
+    # Проверяем права - теперь админы тоже могут удалять скамеров
+    if not can_manage_chat(user.id, 0):
+        await update.message.reply_text("❌ У вас нет прав для удаления скамеров!")
         return
     
     if not context.args:
@@ -621,9 +769,10 @@ async def del_scammer_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     if cursor.rowcount > 0:
         await update.message.reply_text(f"✅ @{username} удален из скамеров")
     else:
-        await update.message.reply_text(f"❌ @{username} не найден")
+        await update.message.reply_text(f"❌ @{username} не найден в базе скамеров")
 
 async def add_garant_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавить гаранта (только для главного админа)"""
     if not check_message_cooldown(update.effective_user.id):
         return
     
@@ -664,6 +813,7 @@ async def add_garant_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(response)
 
 async def del_garant_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удалить гаранта (только для главного админа)"""
     if not check_message_cooldown(update.effective_user.id):
         return
     
@@ -687,6 +837,7 @@ async def del_garant_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(f"❌ @{username} не найден")
 
 async def list_garants_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Список гарантов"""
     if not check_message_cooldown(update.effective_user.id):
         return
     
@@ -704,58 +855,60 @@ async def list_garants_command(update: Update, context: ContextTypes.DEFAULT_TYP
     
     await update.message.reply_text(response)
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ========== СТАТИСТИКА ==========
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Статистика бота (доступно админам)"""
     if not check_message_cooldown(update.effective_user.id):
         return
     
-    chat_type = update.effective_chat.type
     user = update.effective_user
     
-    help_text = (
-        "🤖 Anti-Scam Bot - Справка\n\n"
-        "📌 Основные команды:\n"
-        "/start - Начать работу с ботом\n"
-        "/check @username - Проверить пользователя\n"
-        "/check (в ответ на сообщение) - Проверить отправителя\n"
-        "/me - Показать мой профиль\n"
-        "/garants - Список гарантов\n\n"
+    # Проверяем права
+    if not can_manage_chat(user.id, 0):
+        await update.message.reply_text("❌ У вас нет прав для просмотра статистики!")
+        return
+    
+    cursor.execute("SELECT COUNT(*) FROM scammers")
+    scammer_count = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM garants")
+    garant_count = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM search_history")
+    search_count = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM chat_admins WHERE chat_id = 0")
+    chat_admins_count = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT SUM(added_scammers) FROM admin_stats")
+    total_added_scammers = cursor.fetchone()[0] or 0
+    
+    # Получаем топ админов по добавлению скамеров
+    cursor.execute("SELECT user_id, added_scammers FROM chat_admins WHERE chat_id = 0 ORDER BY added_scammers DESC LIMIT 5")
+    top_admins = cursor.fetchall()
+    
+    top_admins_text = ""
+    for idx, (admin_id, added_count) in enumerate(top_admins, 1):
+        top_admins_text += f"{idx}. ID {admin_id}: {added_count} скамеров\n"
+    
+    stats_text = (
+        f"📊 Статистика Anti-Scam Bot v6.0:\n\n"
+        f"🚨 Скамеров в базе: {scammer_count}\n"
+        f"⭐ Гарантов в базе: {garant_count}\n"
+        f"🔍 Всего проверок: {search_count}\n"
+        f"👥 Администраторов: {chat_admins_count + 1}\n"
+        f"📈 Всего добавлено скамеров: {total_added_scammers}\n\n"
+        f"🏆 ТОП-5 администраторов:\n{top_admins_text}\n"
+        f"👑 Глобальный админ ID: {ADMIN_ID}\n"
+        f"🌐 Хост: Render.com\n"
+        f"📡 Запросов к API: {bot_status['total_requests']}\n"
+        f"🔄 Версия: 6.0 (полное управление ролями)"
     )
-    
-    if can_manage_chat(user.id, update.effective_chat.id):
-        help_text += (
-            "👑 Команды для администраторов:\n"
-            "/add_scammer @username причина - Добавить скамера\n"
-            "/del_scammer @username - Удалить скамера\n"
-            "/add_admin @username - Добавить администратора\n"
-            "/del_admin @username - Удалить администратора\n"
-            "/list_admins - Список администраторов\n"
-            "/warn @username - Выдать предупреждение\n"
-            "/mute @username - Заглушить\n"
-            "/open - Открыть чат\n"
-            "/close - Закрыть чат\n\n"
-        )
-    
-    if is_global_admin(user.id):
-        help_text += (
-            "🕵️‍♂️ Глобальные админ команды:\n"
-            "/add_garant @username - Добавить гаранта\n"
-            "/del_garant @username - Удалить гаранта\n"
-            "/stats - Полная статистика\n"
-            "/broadcast - Рассылка сообщения\n\n"
-        )
-    
-    help_text += (
-        "📊 Статус бота: /status\n"
-        "🛠 Разработчик: @SAGYN_OFFICIAL"
-    )
-    
-    await update.message.reply_text(
-        help_text,
-        reply_markup=get_main_reply_keyboard(update.effective_user.id, update.effective_chat.type)
-    )
+    await update.message.reply_text(stats_text)
 
 # ========== КОМАНДЫ ДЛЯ ЧАТОВ ==========
-async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def add_chat_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавить администратора чата"""
     if not check_message_cooldown(update.effective_user.id):
         return
     
@@ -767,11 +920,11 @@ async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if not can_manage_chat(user.id, chat.id):
-        await update.message.reply_text("❌ У вас нет прав для добавления администраторов!")
+        await update.message.reply_text("❌ У вас нет прав для добавления администраторов чата!")
         return
     
     if not context.args:
-        await update.message.reply_text("Использование: /add_admin @username\nПример: /add_admin @user123")
+        await update.message.reply_text("Использование: /add_chat_admin @username\nПример: /add_chat_admin @user123")
         return
     
     target = context.args[0].replace('@', '')
@@ -798,7 +951,6 @@ async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👤 Добавил: {user.first_name}\n"
             f"🕐 Время: {datetime.now().strftime('%H:%M:%S')}\n\n"
             f"🛡️ Теперь этот пользователь может:\n"
-            f"• Добавлять скамеров (/add_scammer)\n"
             f"• Управлять чатом (/close, /open)\n"
             f"• Выдавать предупреждения (/warn)\n"
             f"• Заглушать пользователей (/mute)"
@@ -809,88 +961,55 @@ async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except sqlite3.IntegrityError:
         await update.message.reply_text(f"❌ @{target} уже является администратором!")
     except Exception as e:
-        logger.error(f"Ошибка в add_admin_command: {e}")
+        logger.error(f"Ошибка в add_chat_admin_command: {e}")
         await update.message.reply_text("❌ Произошла ошибка при добавлении администратора!")
 
-async def del_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ========== СПРАВКА ==========
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_message_cooldown(update.effective_user.id):
         return
     
-    chat = update.effective_chat
+    chat_type = update.effective_chat.type
     user = update.effective_user
     
-    if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("Эта команда работает только в группах!")
-        return
+    help_text = (
+        "🤖 Anti-Scam Bot - Справка\n\n"
+        "📌 Основные команды:\n"
+        "/start - Начать работу с ботом\n"
+        "/check @username - Проверить пользователя\n"
+        "/check (в ответ на сообщение) - Проверить отправителя\n"
+        "/me - Показать мой профиль\n"
+        "/garants - Список гарантов\n\n"
+    )
     
-    if not can_manage_chat(user.id, chat.id):
-        await update.message.reply_text("❌ У вас нет прав для удаления администраторов!")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("Использование: /del_admin @username\nПример: /del_admin @user123")
-        return
-    
-    target = context.args[0].replace('@', '')
-    user_id = hash(target) % 1000000
-    
-    if not is_chat_admin(user_id, chat.id):
-        await update.message.reply_text(f"❌ @{target} не является администратором этого чата!")
-        return
-    
-    cursor.execute("DELETE FROM chat_admins WHERE user_id = ? AND chat_id = ?", (user_id, chat.id))
-    conn.commit()
-    
-    if cursor.rowcount > 0:
-        await update.message.reply_text(f"✅ @{target} удален из администраторов чата!")
-    else:
-        await update.message.reply_text(f"❌ Не удалось удалить @{target}!")
-
-async def list_admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not check_message_cooldown(update.effective_user.id):
-        return
-    
-    chat = update.effective_chat
-    
-    if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("Эта команда работает только в группах!")
-        return
-    
-    try:
-        cursor.execute(
-            "SELECT user_id, added_by, added_date, added_scammers FROM chat_admins WHERE chat_id = ? ORDER BY added_date",
-            (chat.id,)
+    if can_manage_chat(user.id, update.effective_chat.id):
+        help_text += (
+            "👑 Команды для администраторов:\n"
+            "/add_scammer @username причина - Добавить скамера\n"
+            "/del_scammer @username - Удалить скамера\n"
+            "/stats - Статистика бота\n"
+            "/list_admins - Список администраторов\n\n"
         )
-        chat_admins = cursor.fetchall()
-        
-        global_admin_info = f"👑 Глобальный администратор: ID {ADMIN_ID}\n"
-        
-        if chat_admins:
-            admins_list = []
-            for admin in chat_admins:
-                user_id, added_by, added_date, added_scammers = admin
-                admins_list.append(f"• ID: {user_id} (добавил {added_scammers} скамеров, добавлен {added_date[:10]})")
-            
-            response = (
-                f"📋 Администраторы чата: {chat.title}\n\n"
-                f"{global_admin_info}\n"
-                f"👥 Администраторы чата ({len(chat_admins)}):\n"
-                + "\n".join(admins_list) +
-                f"\n\n📊 Всего администраторов: {len(chat_admins) + 1}"
-            )
-        else:
-            response = (
-                f"📋 Администраторы чата: {chat.title}\n\n"
-                f"{global_admin_info}\n"
-                f"👥 Администраторы чата: Нет\n\n"
-                f"📊 Всего администраторов: 1 (только глобальный)"
-            )
-        
-        await update.message.reply_text(response)
-        
-    except Exception as e:
-        logger.error(f"Ошибка в list_admins_command: {e}")
-        await update.message.reply_text("❌ Произошла ошибка при получении списка администраторов!")
+    
+    if is_global_admin(user.id):
+        help_text += (
+            "🕵️‍♂️ Глобальные админ команды:\n"
+            "/add_admin @username - Добавить администратора\n"
+            "/del_admin @username - Удалить администратора\n"
+            "/add_garant @username - Добавить гаранта\n"
+            "/del_garant @username - Удалить гаранта\n"
+            "/broadcast - Рассылка сообщения\n\n"
+        )
+    
+    help_text += (
+        "📊 Статус бота: /status\n"
+        "🛠 Разработчик: @SAGYN_OFFICIAL"
+    )
+    
+    await update.message.reply_text(
+        help_text,
+        reply_markup=get_main_reply_keyboard(update.effective_user.id, update.effective_chat.type)
+    )
 
 # ========== ДРУГИЕ КОМАНДЫ ==========
 async def bot_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -907,28 +1026,6 @@ async def bot_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"⚡ Бот работает нормально"
     )
     await update.message.reply_text(status_text)
-
-async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Рассылка сообщения всем пользователям"""
-    if not check_message_cooldown(update.effective_user.id):
-        return
-    
-    user = update.effective_user
-    
-    if not is_global_admin(user.id):
-        await update.message.reply_text("❌ Только глобальный администратор может делать рассылку!")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("Использование: /broadcast текст_сообщения")
-        return
-    
-    message = ' '.join(context.args)
-    
-    # Здесь должен быть код для рассылки
-    # В реальном боте нужно получить список всех пользователей из базы
-    
-    await update.message.reply_text(f"📢 Рассылка подготовлена!\n\nСообщение: {message}\n\n⚠️ В текущей версии рассылка не реализована.")
 
 # ========== ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ ==========
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -984,37 +1081,14 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text("Используйте команду: /del_garant @username")
         elif text == "➕ Добавить скамера" and can_manage_chat(user.id, 0):
             await update.message.reply_text("Используйте команду: /add_scammer @username причина_скама")
-        elif text == "➖ Удалить скамера" and is_global_admin(user.id):
+        elif text == "➖ Удалить скамера" and can_manage_chat(user.id, 0):
             await update.message.reply_text("Используйте команду: /del_scammer @username")
+        elif text == "➕ Добавить админа" and is_global_admin(user.id):
+            await update.message.reply_text("Используйте команду: /add_admin @username")
+        elif text == "➖ Удалить админа" and is_global_admin(user.id):
+            await update.message.reply_text("Используйте команду: /del_admin @username")
         elif text == "📊 Статистика" and can_manage_chat(user.id, 0):
-            cursor.execute("SELECT COUNT(*) FROM scammers")
-            scammer_count = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT COUNT(*) FROM garants")
-            garant_count = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT COUNT(*) FROM search_history")
-            search_count = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT COUNT(*) FROM chat_admins")
-            chat_admins_count = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT SUM(added_scammers) FROM admin_stats")
-            total_added_scammers = cursor.fetchone()[0] or 0
-            
-            stats_text = (
-                f"📊 Статистика бота v6.0:\n\n"
-                f"🚨 Скамеров в базе: {scammer_count}\n"
-                f"⭐ Гарантов в базе: {garant_count}\n"
-                f"🔍 Всего проверок: {search_count}\n"
-                f"👥 Администраторов чатов: {chat_admins_count}\n"
-                f"📈 Всего добавлено скамеров: {total_added_scammers}\n\n"
-                f"👑 Глобальный админ ID: {ADMIN_ID}\n"
-                f"🌐 Хост: Render.com\n"
-                f"📡 Запросов к API: {bot_status['total_requests']}\n"
-                f"🔄 Версия: 6.0 (полное управление ролями)"
-            )
-            await update.message.reply_text(stats_text, reply_markup=get_admin_reply_keyboard())
+            await stats_command(update, context)
         elif text == "⬅️ На главную":
             await update.message.reply_text(
                 "Главное меню:",
@@ -1047,13 +1121,17 @@ def main():
         print("🤖 Инициализация Telegram бота...")
         application = Application.builder().token(TOKEN).build()
         
-        # Основные команды
+        # СНАЧАЛА обработчик текстовых сообщений (чтобы перехватывал кнопки)
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+        
+        # ПОТОМ основные команды
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("check", check_command))
         application.add_handler(CommandHandler("me", me_command))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("status", bot_status_command))
         application.add_handler(CommandHandler("garants", list_garants_command))
+        application.add_handler(CommandHandler("stats", stats_command))
         
         # Команды администраторов
         application.add_handler(CommandHandler("add_scammer", add_scammer_command))
@@ -1061,16 +1139,13 @@ def main():
         application.add_handler(CommandHandler("add_garant", add_garant_command))
         application.add_handler(CommandHandler("del_garant", del_garant_command))
         
+        # Команды для управления админами
+        application.add_handler(CommandHandler("add_admin", add_admin_global_command))
+        application.add_handler(CommandHandler("del_admin", del_admin_global_command))
+        application.add_handler(CommandHandler("list_admins", list_admins_global_command))
+        
         # Команды для управления чатами
-        application.add_handler(CommandHandler("add_admin", add_admin_command))
-        application.add_handler(CommandHandler("del_admin", del_admin_command))
-        application.add_handler(CommandHandler("list_admins", list_admins_command))
-        
-        # Дополнительные команды для админа
-        application.add_handler(CommandHandler("broadcast", broadcast_command))
-        
-        # Обработчики текстовых сообщений (ВАЖНО: добавляется ПОСЛЕ всех команд!)
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+        application.add_handler(CommandHandler("add_chat_admin", add_chat_admin_command))
         
         print("\n" + "="*50)
         print("✅ СИСТЕМА ЗАПУЩЕНА УСПЕШНО!")
@@ -1083,12 +1158,13 @@ def main():
         print("4. Причины добавления скамеров")
         print("5. Статистика администраторов")
         print("\n👑 КОМАНДЫ ДЛЯ АДМИНИСТРАТОРОВ:")
-        print("• /add_scammer @username причина - добавить скамера")
-        print("• /del_scammer @username - удалить скамера")
-        print("• /add_garant @username - добавить гаранта")
-        print("• /del_garant @username - удалить гаранта")
-        print("• /add_admin @username - добавить администратора чата")
-        print("• /garants - список гарантов с пруфами")
+        print("• /add_admin @username - добавить администратора (только главный админ)")
+        print("• /del_admin @username - удалить администратора (только главный админ)")
+        print("• /add_scammer @username причина - добавить скамера (доступно админам)")
+        print("• /del_scammer @username - удалить скамера (доступно админам)")
+        print("• /add_garant @username - добавить гаранта (только главный админ)")
+        print("• /list_admins - список всех администраторов")
+        print("• /stats - статистика бота")
         print("\n📸 ID ФОТО ДЛЯ ПРОВЕРКИ:")
         print(f"• Приветствие: {PHOTO_START[:30]}...")
         print(f"• Администратор: {PHOTO_ADMIN[:30]}...")
