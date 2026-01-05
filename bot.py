@@ -248,7 +248,7 @@ def is_global_admin(user_id):
     """Проверка, является ли пользователь глобальным администратором"""
     return user_id == ADMIN_ID
 
-def is_chat_admin(user_id, chat_id):
+def is_chat_admin(user_id, chat_id=0):
     """Проверка, является ли пользователь администратором чата"""
     try:
         cursor.execute("SELECT 1 FROM chat_admins WHERE user_id = ? AND chat_id = ?", (user_id, chat_id))
@@ -257,7 +257,7 @@ def is_chat_admin(user_id, chat_id):
         logger.error(f"Ошибка при проверке прав администратора чата: {e}")
         return False
 
-def can_manage_chat(user_id, chat_id):
+def can_manage_chat(user_id, chat_id=0):
     """Проверка, может ли пользователь управлять чатом"""
     return is_global_admin(user_id) or is_chat_admin(user_id, chat_id)
 
@@ -267,13 +267,17 @@ def add_chat_admin_to_db(user_id, added_by=ADMIN_ID, chat_id=0):
         cursor.execute(
             """INSERT INTO chat_admins (user_id, chat_id, added_by, added_date) 
             VALUES (?, ?, ?, ?)
-            ON CONFLICT(user_id, chat_id) DO NOTHING""",
+            ON CONFLICT(user_id, chat_id) DO UPDATE SET 
+            added_by = excluded.added_by,
+            added_date = excluded.added_date""",
             (user_id, chat_id, added_by, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         )
         conn.commit()
+        print(f"✅ Админ {user_id} добавлен в базу с chat_id={chat_id}")
         return True
     except Exception as e:
         logger.error(f"Ошибка при добавлении администратора: {e}")
+        print(f"❌ Ошибка при добавлении администратора {user_id}: {e}")
         return False
 
 def remove_chat_admin_from_db(user_id, chat_id=0):
@@ -281,9 +285,13 @@ def remove_chat_admin_from_db(user_id, chat_id=0):
     try:
         cursor.execute("DELETE FROM chat_admins WHERE user_id = ? AND chat_id = ?", (user_id, chat_id))
         conn.commit()
-        return cursor.rowcount > 0
+        deleted = cursor.rowcount > 0
+        if deleted:
+            print(f"✅ Админ {user_id} удален из базы с chat_id={chat_id}")
+        return deleted
     except Exception as e:
         logger.error(f"Ошибка при удалении администратора: {e}")
+        print(f"❌ Ошибка при удалении администратора {user_id}: {e}")
         return False
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ ПРЕДОТВРАЩЕНИЯ ДУБЛИРОВАНИЯ ==========
@@ -502,7 +510,7 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {result['search_count']} раз\n\n"
             f"🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot\n\n"
             f"🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи [{current_time}]\n\n"
-            f"оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!"
+            f"оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧаю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!"
         )
         
         try:
@@ -605,7 +613,7 @@ async def add_admin_global_command(update: Update, context: ContextTypes.DEFAULT
             f"• Добавлять скамеров (/add_scammer)\n"
             f"• Удалять скамеров (/del_scammer)\n"
             f"• Просматривать статистику (/stats)\n"
-            f"• Управлять чатами (/add_chat_admin, /del_chat_admin)"
+            f"• Проверять пользователей (/check)"
         )
     else:
         await update.message.reply_text(f"❌ Ошибка при добавлении администратора @{target_username}")
@@ -658,7 +666,7 @@ async def list_admins_global_command(update: Update, context: ContextTypes.DEFAU
         )
         chat_admins = cursor.fetchall()
         
-        global_admin_info = f"👑 Глобальный администратор: ID {ADMIN_ID} (@SAGYN_OFFICIAL)\n"
+        global_admin_info = f"👑 Глобальный администратор: ID {ADMIN_ID} (Вы)\n"
         
         if chat_admins:
             admins_list = []
@@ -696,6 +704,11 @@ async def add_scammer_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = update.effective_user
     
     # Проверяем права - теперь админы тоже могут добавлять скамеров
+    print(f"🔍 DEBUG: Проверка прав пользователя {user.id} для добавления скамера")
+    print(f"🔍 DEBUG: is_global_admin({user.id}) = {is_global_admin(user.id)}")
+    print(f"🔍 DEBUG: is_chat_admin({user.id}, 0) = {is_chat_admin(user.id, 0)}")
+    print(f"🔍 DEBUG: can_manage_chat({user.id}, 0) = {can_manage_chat(user.id, 0)}")
+    
     if not can_manage_chat(user.id, 0):
         await update.message.reply_text("❌ У вас нет прав для добавления скамеров!")
         return
@@ -709,6 +722,9 @@ async def add_scammer_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     proofs = ' '.join(context.args[2:]) if len(context.args) > 2 else ""
     
     try:
+        # Генерируем user_id из username
+        user_id = hash(username) % 1000000
+        
         cursor.execute(
             """INSERT INTO scammers (user_id, username, scam_count, proofs, added_by, added_date, reason, reporter_id) 
             VALUES (?, ?, 1, ?, ?, ?, ?, ?)
@@ -716,7 +732,7 @@ async def add_scammer_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             scam_count = scam_count + 1,
             proofs = COALESCE(proofs, '') || '\n' || excluded.proofs,
             reason = excluded.reason""",
-            (hash(username) % 1000000, username, proofs, user.id, 
+            (user_id, username, proofs, user.id, 
              datetime.now().strftime("%Y-%m-%d %H:%M:%S"), reason, user.id)
         )
         
@@ -736,7 +752,7 @@ async def add_scammer_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"✅ @{username} добавлен в скамеры!\n\n"
             f"📝 Причина: {reason}\n"
             f"📎 Доказательства: {proofs or 'Не указаны'}\n\n"
-            f"👤 Добавил: {user.first_name}\n"
+            f"👤 Добавил: {user.first_name} (@{user.username or 'без username'})\n"
             f"🕐 Время: {datetime.now().strftime('%H:%M:%S')}"
         )
         
@@ -744,6 +760,7 @@ async def add_scammer_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         
     except Exception as e:
         logger.error(f"Ошибка в add_scammer_command: {e}")
+        print(f"🔴 ERROR в add_scammer_command: {e}")
         await update.message.reply_text("❌ Произошла ошибка при добавлении скамера!")
 
 async def del_scammer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -905,64 +922,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔄 Версия: 6.0 (полное управление ролями)"
     )
     await update.message.reply_text(stats_text)
-
-# ========== КОМАНДЫ ДЛЯ ЧАТОВ ==========
-async def add_chat_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Добавить администратора чата"""
-    if not check_message_cooldown(update.effective_user.id):
-        return
-    
-    chat = update.effective_chat
-    user = update.effective_user
-    
-    if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("Эта команда работает только в группах!")
-        return
-    
-    if not can_manage_chat(user.id, chat.id):
-        await update.message.reply_text("❌ У вас нет прав для добавления администраторов чата!")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("Использование: /add_chat_admin @username\nПример: /add_chat_admin @user123")
-        return
-    
-    target = context.args[0].replace('@', '')
-    user_id = hash(target) % 1000000
-    
-    if is_chat_admin(user_id, chat.id):
-        await update.message.reply_text(f"❌ @{target} уже является администратором этого чата!")
-        return
-    
-    try:
-        cursor.execute(
-            "INSERT INTO chat_admins (user_id, chat_id, added_by, added_date) VALUES (?, ?, ?, ?)",
-            (user_id, chat.id, user.id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        )
-        
-        # Обновляем статистики администратора
-        update_admin_stats(user.id, "admin")
-        
-        conn.commit()
-        
-        response = (
-            f"✅ @{target} добавлен как администратор чата!\n\n"
-            f"📛 Чат: {chat.title}\n"
-            f"👤 Добавил: {user.first_name}\n"
-            f"🕐 Время: {datetime.now().strftime('%H:%M:%S')}\n\n"
-            f"🛡️ Теперь этот пользователь может:\n"
-            f"• Управлять чатом (/close, /open)\n"
-            f"• Выдавать предупреждения (/warn)\n"
-            f"• Заглушать пользователей (/mute)"
-        )
-        
-        await update.message.reply_text(response)
-        
-    except sqlite3.IntegrityError:
-        await update.message.reply_text(f"❌ @{target} уже является администратором!")
-    except Exception as e:
-        logger.error(f"Ошибка в add_chat_admin_command: {e}")
-        await update.message.reply_text("❌ Произошла ошибка при добавлении администратора!")
 
 # ========== СПРАВКА ==========
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1143,9 +1102,6 @@ def main():
         application.add_handler(CommandHandler("add_admin", add_admin_global_command))
         application.add_handler(CommandHandler("del_admin", del_admin_global_command))
         application.add_handler(CommandHandler("list_admins", list_admins_global_command))
-        
-        # Команды для управления чатами
-        application.add_handler(CommandHandler("add_chat_admin", add_chat_admin_command))
         
         print("\n" + "="*50)
         print("✅ СИСТЕМА ЗАПУЩЕНА УСПЕШНО!")
