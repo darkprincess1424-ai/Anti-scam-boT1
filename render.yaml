@@ -2,21 +2,9 @@ services:
   - type: web
     name: anti-scam-bot
     env: python
-    plan: free
-    region: frankfurt
-    
-    # Явно указываем pip
-    buildCommand: |
-      pip install --upgrade pip
-      pip install -r requirements.txt
-    
-    startCommand: python bot.py
-    
-    # Отключаем автоматическое определение Poetry
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn bot:app
     envVars:
-      - key: BOT_TOKEN
-        sync: false
-      - key: PIP_REQUIRE_VIRTUALENV
-        value: "false"
-    
-    autoDeploy: true
+      - key: PYTHON_VERSION
+        value: 3.11.0
+    healthCheckPath: /health
