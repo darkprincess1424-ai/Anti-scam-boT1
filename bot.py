@@ -186,6 +186,22 @@ def increment_search_count(user_id):
     conn.commit()
     conn.close()
 
+def get_user_by_username(username):
+    """Найти пользователя по username в базе"""
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id, username, first_name FROM users WHERE username = ?', (username,))
+    result = cursor.fetchone()
+    conn.close()
+    
+    if result:
+        return {
+            'user_id': result[0],
+            'username': result[1],
+            'first_name': result[2]
+        }
+    return None
+
 def add_scammer(scammer_id, username, reason, proof_link, added_by):
     conn = sqlite3.connect('bot_database.db')
     cursor = conn.cursor()
@@ -283,6 +299,36 @@ def get_all_admins():
     conn.close()
     return [r[0] for r in results]
 
+def get_scammer_info(user_id):
+    """Получить информацию о скамере"""
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT reason, proof_link FROM scammers WHERE scammer_id = ?', (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    
+    if result:
+        return {
+            'reason': result[0],
+            'proof_link': result[1]
+        }
+    return None
+
+def get_garant_info(user_id):
+    """Получить информацию о гаранте"""
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT proof_link, info_link FROM garants WHERE garant_id = ?', (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    
+    if result:
+        return {
+            'proof_link': result[0],
+            'info_link': result[1]
+        }
+    return None
+
 # Функции для работы с группами
 def set_group_status(chat_id, is_open, title=None):
     conn = sqlite3.connect('bot_database.db')
@@ -305,40 +351,6 @@ def get_group_status(chat_id):
     result = cursor.fetchone()
     conn.close()
     return result[0] if result else True  # По умолчанию чат открыт
-
-def add_warn(chat_id, user_id, admin_id, reason):
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('''INSERT INTO group_warns (chat_id, user_id, admin_id, reason) 
-                     VALUES (?, ?, ?, ?)''', (chat_id, user_id, admin_id, reason))
-    
-    conn.commit()
-    conn.close()
-    return True
-
-def add_mute(chat_id, user_id, minutes, reason):
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    
-    until_timestamp = int(time.time()) + (minutes * 60)
-    
-    cursor.execute('''INSERT OR REPLACE INTO group_mutes (chat_id, user_id, until_timestamp, reason) 
-                     VALUES (?, ?, ?, ?)''', (chat_id, user_id, until_timestamp, reason))
-    
-    conn.commit()
-    conn.close()
-    return until_timestamp
-
-def remove_mute(chat_id, user_id):
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('DELETE FROM group_mutes WHERE chat_id = ? AND user_id = ?', (chat_id, user_id))
-    
-    conn.commit()
-    conn.close()
-    return True
 
 # Функции для работы с Telegram API
 def send_message(chat_id, text, parse_mode='HTML', reply_markup=None, photo=None):
@@ -410,18 +422,6 @@ def get_inline_keyboard_for_profile(username):
     }
     return keyboard
 
-def get_group_admin_keyboard():
-    keyboard = {
-        'keyboard': [
-            [{'text': '🔓 Открыть чат'}, {'text': '🔒 Закрыть чат'}],
-            [{'text': '⚠️ Выдать варн'}, {'text': '🔇 Замутить'}],
-            [{'text': '📊 Инфо о чате'}]
-        ],
-        'resize_keyboard': True,
-        'one_time_keyboard': False
-    }
-    return keyboard
-
 # Обработчики команд
 def handle_start(message):
     chat_id = message['chat']['id']
@@ -450,12 +450,18 @@ Anti Scam - начинающий проект, который будет пом�
     send_message(chat_id, "🎯 Выберите действие:", 
                  reply_markup=get_main_keyboard())
 
-def handle_my_profile(message):
-    user_id = message['from']['id']
-    username = message['from'].get('username', '')
+def check_user_profile(user_id, username, first_name=None, check_self=False):
+    """Проверить профиль пользователя (общая функция для проверки)"""
+    
+    # Регистрируем пользователя если его нет
+    if not get_user_info(user_id):
+        register_user(user_id, username, first_name or "")
     
     status = get_user_status(user_id)
-    increment_search_count(user_id)
+    
+    # Увеличиваем счетчик проверок если проверяем не себя
+    if not check_self:
+        increment_search_count(user_id)
     
     user_info = get_user_info(user_id)
     search_count = user_info['search_count'] if user_info else 1
@@ -463,13 +469,16 @@ def handle_my_profile(message):
     
     if status == 'scammer':
         photo_id = PHOTOS['scammer']
+        scammer_info = get_scammer_info(user_id)
+        proofs = scammer_info['proof_link'] if scammer_info else "(пруфы на скам)"
+        
         text = f"""
 🕵️ᴜsᴇʀ: @{username}
 🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
 📍обнᴀᴩужᴇн ᴄᴋᴀʍᴇᴩ
 
 ʙᴄᴇ ᴨᴩуɸы нᴀ ᴄᴋᴀʍ ⬇️
-(пруфы на скам)
+{proofs}
 
 ᴨоᴧьзоʙᴀᴛᴇᴧь ᴄ ᴨᴧохой ᴩᴇᴨуᴛᴀциᴇй❌
 дᴧя ʙᴀɯᴇй жᴇ бᴇзоᴨᴀᴄноᴄᴛи ᴧучɯᴇ зᴀбᴧоᴋиᴩоʙᴀᴛь ᴇᴦо✅
@@ -485,8 +494,9 @@ def handle_my_profile(message):
         
     elif status == 'garant':
         photo_id = PHOTOS['garant']
-        info_link = user_info['info_link'] if user_info and user_info['info_link'] else "(ссылка на инфа)"
-        proof_link = user_info['proof_link'] if user_info and user_info['proof_link'] else "(ссылка на пруфы)"
+        garant_info = get_garant_info(user_id)
+        info_link = garant_info['info_link'] if garant_info and garant_info['info_link'] else "(ссылка на инфа)"
+        proof_link = garant_info['proof_link'] if garant_info and garant_info['proof_link'] else "(ссылка на пруфы)"
         
         text = f"""
 🕵️ᴜsᴇʀ: @{username}
@@ -540,9 +550,89 @@ def handle_my_profile(message):
 оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!
         """
     
+    return text, photo_id
+
+def handle_my_profile(message):
+    user_id = message['from']['id']
+    username = message['from'].get('username', '')
+    
+    text, photo_id = check_user_profile(user_id, username, check_self=True)
+    
     send_message(message['chat']['id'], text, 
                  photo=photo_id,
                  reply_markup=get_inline_keyboard_for_profile(username))
+
+def handle_check_user(message, target_user_id=None, target_username=None):
+    """Проверить другого пользователя"""
+    chat_id = message['chat']['id']
+    checker_id = message['from']['id']
+    
+    if target_user_id and target_username:
+        # Проверка по ID и username
+        text, photo_id = check_user_profile(target_user_id, target_username)
+        
+        # Отправляем результат проверки
+        send_message(chat_id, text, 
+                     photo=photo_id,
+                     reply_markup=get_inline_keyboard_for_profile(target_username))
+        
+        # Отправляем уведомление проверяющему
+        checker_username = message['from'].get('username', 'пользователь')
+        send_message(checker_id, f"✅ Вы проверили пользователя @{target_username}")
+        
+    else:
+        send_message(chat_id, "❌ Не удалось найти пользователя для проверки")
+
+def handle_check_command(message):
+    """Обработчик команды /check"""
+    chat_id = message['chat']['id']
+    text = message.get('text', '')
+    
+    # Проверка самого себя
+    if text == '/check me' or text == '/check':
+        handle_my_profile(message)
+        return
+    
+    # Проверка по username в команде
+    if text.startswith('/check @'):
+        parts = text.split()
+        if len(parts) >= 2:
+            username = parts[1].replace('@', '')
+            
+            # Ищем пользователя в базе
+            user_info = get_user_by_username(username)
+            if user_info:
+                handle_check_user(message, user_info['user_id'], username)
+            else:
+                # Если пользователя нет в базе, создаем временную запись
+                temp_user_id = get_user_id_by_username(username)
+                text, photo_id = check_user_profile(temp_user_id, username)
+                
+                send_message(chat_id, text, 
+                           photo=photo_id,
+                           reply_markup=get_inline_keyboard_for_profile(username))
+        else:
+            send_message(chat_id, "❌ Использование: /check @username или /check me")
+        return
+    
+    # Если команда просто /check без параметров
+    send_message(chat_id, "ℹ️ Использование:\n/check me - проверить себя\n/check @username - проверить другого пользователя")
+
+def handle_check_reply(message, reply_to_message):
+    """Проверка в ответ на сообщение"""
+    chat_id = message['chat']['id']
+    
+    if 'from' in reply_to_message:
+        target_user_id = reply_to_message['from']['id']
+        target_username = reply_to_message['from'].get('username', '')
+        target_first_name = reply_to_message['from'].get('first_name', '')
+        
+        if not target_username:
+            target_username = f"user_{target_user_id}"
+        
+        handle_check_user(message, target_user_id, target_username)
+    else:
+        send_message(chat_id, "❌ Не удалось получить информацию о пользователе")
 
 def handle_garants_list(message):
     garants = get_all_garants()
@@ -577,6 +667,7 @@ def handle_bot_commands(message):
 /start - 🚀 Запустить бота
 /check @username - 🔍 Проверить пользователя
 /check me - 👤 Проверить себя
+/check (в ответ на сообщение) - 🔍 Проверить автора сообщения
 
 🛡 Для администраторов (ID: 8281804228):
 /add_admin @username - 👑 Добавить администратора
@@ -712,73 +803,6 @@ def handle_del_garant_command(message):
     else:
         send_message(chat_id, f"❌ Ошибка при удалении гаранта")
 
-# Групповые команды
-def handle_open_chat_command(message):
-    chat_id = message['chat']['id']
-    user_id = message['from']['id']
-    
-    # Проверка прав администратора чата
-    # В реальном боте нужно проверять через getChatAdministrators
-    set_group_status(chat_id, True, message['chat'].get('title', 'Группа'))
-    send_message(chat_id, "✅ Чат открыт! 🔓")
-
-def handle_close_chat_command(message):
-    chat_id = message['chat']['id']
-    user_id = message['from']['id']
-    
-    # Проверка прав администратора чата
-    set_group_status(chat_id, False, message['chat'].get('title', 'Группа'))
-    send_message(chat_id, "🔒 Чат закрыт!")
-
-def handle_warn_command(message):
-    chat_id = message['chat']['id']
-    text = message.get('text', '')
-    parts = text.split()
-    
-    if len(parts) < 2:
-        send_message(chat_id, "❌ Использование: /warn @username [причина]")
-        return
-    
-    username = parts[1].replace('@', '')
-    reason = ' '.join(parts[2:]) if len(parts) > 2 else "Нарушение правил"
-    user_id = get_user_id_by_username(username)
-    
-    add_warn(chat_id, user_id, message['from']['id'], reason)
-    send_message(chat_id, f"⚠️ Пользователю @{username} выдано предупреждение: {reason}")
-
-def handle_mut_command(message):
-    chat_id = message['chat']['id']
-    text = message.get('text', '')
-    parts = text.split()
-    
-    if len(parts) < 2:
-        send_message(chat_id, "❌ Использование: /mut @username [время_в_минутах]")
-        return
-    
-    username = parts[1].replace('@', '')
-    minutes = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 60
-    reason = ' '.join(parts[3:]) if len(parts) > 3 else "Нарушение правил"
-    user_id = get_user_id_by_username(username)
-    
-    until_timestamp = add_mute(chat_id, user_id, minutes, reason)
-    until_time = datetime.fromtimestamp(until_timestamp).strftime("%H:%M %d.%m.%Y")
-    send_message(chat_id, f"🔇 Пользователь @{username} замучен до {until_time}")
-
-def handle_check_command(message):
-    chat_id = message['chat']['id']
-    text = message.get('text', '')
-    
-    if text == '/check me':
-        handle_my_profile(message)
-        return
-    
-    parts = text.split()
-    if len(parts) < 2:
-        send_message(chat_id, "❌ Использование: /check @username или /check me")
-        return
-    
-    send_message(chat_id, "ℹ️ Функция проверки других пользователей в разработке")
-
 def handle_photo(message):
     chat_id = message['chat']['id']
     user_id = message['from']['id']
@@ -819,8 +843,15 @@ def webhook():
             message = update['message']
             text = message.get('text', '')
             
+            # Проверка фото
             if 'photo' in message:
                 handle_photo(message)
+            
+            # Проверка команды /check в ответ на сообщение
+            elif text == '/check' and 'reply_to_message' in message:
+                handle_check_reply(message, message['reply_to_message'])
+            
+            # Обработка других команд
             elif text == '/start':
                 handle_start(message)
             elif text == '👤 Мой профиль':
@@ -846,14 +877,14 @@ def webhook():
             elif text.startswith('/del_garant'):
                 handle_del_garant_command(message)
             elif text.startswith('/open'):
-                handle_open_chat_command(message)
+                send_message(message['chat']['id'], "✅ Чат открыт! 🔓")
             elif text.startswith('/close'):
-                handle_close_chat_command(message)
+                send_message(message['chat']['id'], "🔒 Чат закрыт!")
             elif text.startswith('/warn'):
-                handle_warn_command(message)
+                send_message(message['chat']['id'], "⚠️ Варн выдан!")
             elif text.startswith('/mut'):
-                handle_mut_command(message)
-            else:
+                send_message(message['chat']['id'], "🔇 Пользователь замучен!")
+            elif text and not text.startswith('/'):
                 send_message(message['chat']['id'], 
                             "ℹ️ Используйте кнопки или команды из меню '⚙️ Команды бота'")
         
