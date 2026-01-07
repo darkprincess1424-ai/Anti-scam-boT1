@@ -38,6 +38,54 @@ logger = logging.getLogger(__name__)
 # =============== ГЛОБАЛЬНЫЙ КЭШ ДЛЯ СООТВЕТСТВИЙ ===============
 username_to_id_cache = {}
 
+# =============== ТЕЛЕГРАМ API ФУНКЦИИ ===============
+def send_message(chat_id, text, parse_mode='HTML', reply_markup=None, photo=None):
+    try:
+        if photo:
+            url = f'{TELEGRAM_API_URL}/sendPhoto'
+            data = {
+                'chat_id': chat_id,
+                'photo': photo,
+                'caption': text,
+                'parse_mode': parse_mode
+            }
+        else:
+            url = f'{TELEGRAM_API_URL}/sendMessage'
+            data = {
+                'chat_id': chat_id,
+                'text': text,
+                'parse_mode': parse_mode
+            }
+        
+        if reply_markup:
+            data['reply_markup'] = json.dumps(reply_markup)
+        
+        response = requests.post(url, json=data, timeout=10)
+        result = response.json()
+        
+        if not result.get('ok'):
+            logger.error(f"Ошибка отправки: {result.get('description')}")
+        
+        return result
+    except Exception as e:
+        logger.error(f"Ошибка отправки: {e}")
+        return {'ok': False}
+
+def delete_message(chat_id, message_id):
+    """Удалить сообщение"""
+    try:
+        url = f'{TELEGRAM_API_URL}/deleteMessage'
+        data = {
+            'chat_id': chat_id,
+            'message_id': message_id
+        }
+        
+        response = requests.post(url, json=data, timeout=10)
+        return response.json()
+    except Exception as e:
+        logger.error(f"Ошибка удаления сообщения: {e}")
+        return {'ok': False}
+
 # =============== ФУНКЦИИ БАЗЫ ДАННЫХ ===============
 def init_db():
     conn = sqlite3.connect('bot_database.db')
@@ -462,6 +510,373 @@ def list_admins():
     
     return admins
 
+# =============== ДЕКОРАТОР ПРОВЕРКИ АДМИНА ===============
+def admin_required(func):
+    """Декоратор для проверки прав администратора"""
+    @wraps(func)
+    def wrapper(message):
+        user_id = message['from']['id']
+        if user_id != ADMIN_ID and get_user_status(user_id) != 'admin':
+            # В группах не показываем сообщение об отсутствии прав
+            chat_type = message['chat'].get('type', 'private')
+            if chat_type == 'private':
+                send_message(message['chat']['id'], "⛔ У вас нет прав администратора!")
+            return None
+        return func(message)
+    return wrapper
+
+# =============== ФУНКЦИИ ДЛЯ МОДЕРАЦИИ ЧАТА ===============
+def restrict_user(chat_id, user_id, until_date=None):
+    """Ограничить пользователя в чате"""
+    try:
+        url = f'{TELEGRAM_API_URL}/restrictChatMember'
+        
+        permissions = {
+            'can_send_messages': False,
+            'can_send_media_messages': False,
+            'can_send_polls': False,
+            'can_send_other_messages': False,
+            'can_add_web_page_previews': False,
+            'can_change_info': False,
+            'can_invite_users': False,
+            'can_pin_messages': False
+        }
+        
+        data = {
+            'chat_id': chat_id,
+            'user_id': user_id,
+            'permissions': json.dumps(permissions)
+        }
+        
+        if until_date:
+            data['until_date'] = until_date
+        
+        response = requests.post(url, json=data, timeout=10)
+        result = response.json()
+        
+        return result.get('ok', False)
+    except Exception as e:
+        logger.error(f"Ошибка при ограничении пользователя: {e}")
+        return False
+
+def unrestrict_user(chat_id, user_id):
+    """Снять ограничения с пользователя в чате"""
+    try:
+        url = f'{TELEGRAM_API_URL}/restrictChatMember'
+        
+        permissions = {
+            'can_send_messages': True,
+            'can_send_media_messages': True,
+            'can_send_polls': True,
+            'can_send_other_messages': True,
+            'can_add_web_page_previews': True,
+            'can_change_info': False,
+            'can_invite_users': False,
+            'can_pin_messages': False
+        }
+        
+        data = {
+            'chat_id': chat_id,
+            'user_id': user_id,
+            'permissions': json.dumps(permissions)
+        }
+        
+        response = requests.post(url, json=data, timeout=10)
+        result = response.json()
+        
+        return result.get('ok', False)
+    except Exception as e:
+        logger.error(f"Ошибка при снятии ограничений: {e}")
+        return False
+
+def get_warns_count(user_id, chat_id):
+    """Получить количество предупреждений пользователя в чате"""
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM warns WHERE user_id = ? AND chat_id = ?', (user_id, chat_id))
+    result = cursor.fetchone()
+    conn.close()
+    
+    return result[0] if result else 0
+
+def add_warn(user_id, chat_id, reason, warned_by):
+    """Добавить предупреждение пользователю"""
+    try:
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO warns (user_id, chat_id, reason, warned_by) 
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, chat_id, reason, warned_by))
+        
+        conn.commit()
+        conn.close()
+        
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении предупреждения: {e}")
+        return False
+
+def remove_warns(user_id, chat_id):
+    """Удалить все предупреждения пользователя в чате"""
+    try:
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('DELETE FROM warns WHERE user_id = ? AND chat_id = ?', (user_id, chat_id))
+        conn.commit()
+        conn.close()
+        
+        return cursor.rowcount
+    except Exception as e:
+        logger.error(f"Ошибка при удалении предупреждений: {e}")
+        return 0
+
+# =============== УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ПРОВЕРКИ ===============
+def check_user_profile(user_input, check_self=False):
+    """Универсальная функция проверки профиля"""
+    user_id = None
+    username = None
+    
+    # Определяем тип входных данных
+    if isinstance(user_input, dict):  # Сообщение от пользователя
+        user_id = user_input['from']['id']
+        username = user_input['from'].get('username', f"user_{user_id}")
+    elif isinstance(user_input, str):  # Username
+        username = user_input.replace('@', '')
+        user_id = get_user_id_by_username(username)
+        
+        if not user_id:
+            # Если не нашли пользователя, создаем временный ID
+            user_id = hash(username) % 1000000000
+            logger.info(f"Пользователь @{username} не найден, создан временный ID: {user_id}")
+    elif isinstance(user_input, int):  # User ID
+        user_id = user_input
+        username = get_username_by_user_id(user_id) or f"user_{user_id}"
+    
+    # Регистрируем пользователя если его нет
+    if user_id and not get_user_info(user_id):
+        register_user(user_id, username, "")
+    
+    status = get_user_status(user_id)
+    
+    # Увеличиваем счетчик проверок если проверяем не себя
+    if not check_self and user_id:
+        increment_search_count(user_id)
+    
+    user_info = get_user_info(user_id)
+    search_count = user_info['search_count'] if user_info else 1
+    current_time = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    display_username = user_info['username'] if user_info else username
+    
+    # Логируем для отладки
+    logger.info(f"Проверка: user_id={user_id}, username={username}, status={status}, display_username={display_username}")
+    
+    if status == 'scammer':
+        photo_id = PHOTOS['scammer']
+        scammer_info = get_scammer_info(user_id)
+        proofs = scammer_info['proof_link'] if scammer_info else "(пруфы на скам)"
+        
+        text = f"""
+🕵️ᴜsᴇʀ: @{display_username}
+🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
+📍обнᴀᴩужᴇн ᴄᴋᴀʍᴇᴩ
+
+ʙᴄᴇ ᴨᴩуɸы нᴀ ᴄᴋᴀʍ ⬇️
+{proofs}
+
+ᴨоᴧьзоʙᴀᴛᴇᴧь ᴄ ᴨᴧохой ᴩᴇᴨуᴛᴀциᴇй❌
+дᴧя ʙᴀɯᴇй жᴇ бᴇзоᴨᴀᴄноᴄᴛи ᴧучɯᴇ зᴀбᴧоᴋиᴩоʙᴀᴛь ᴇᴦо✅
+
+🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {search_count}
+
+🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot
+
+🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи {current_time}
+
+оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!
+        """
+        
+    elif status == 'garant':
+        photo_id = PHOTOS['garant']
+        garant_info = get_garant_info(user_id)
+        info_link = garant_info['info_link'] if garant_info else "(ссылка на инфа)"
+        proof_link = garant_info['proof_link'] if garant_info else "(ссылка на пруфы)"
+        
+        text = f"""
+🕵️ᴜsᴇʀ: @{display_username}
+🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
+💯яʙᴧяᴇᴛᴄя ᴦᴀᴩᴀнᴛоʍ бᴀзы
+
+ᴇᴦо [ᴇᴇ] инɸо: {info_link}
+ᴇᴦо [ᴇᴇ] ᴨᴩуɸы: {proof_link}
+
+🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {search_count}
+
+🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot
+
+🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи {current_time}
+
+оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!
+        """
+        
+    elif status == 'admin':
+        photo_id = PHOTOS['admin']
+        added_scammers = user_info['added_scammers'] if user_info else 0
+        
+        text = f"""
+🕵️ᴜsᴇʀ: @{display_username}
+🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
+💯яʙᴧяᴇᴛᴄя администратором бᴀзы
+
+Добавленно скамеров - {added_scammers}
+
+🔎ᴨоᴧьзоʙᴀᴛᴧя иᴄᴋᴀᴧи: {search_count}
+🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot
+
+🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи {current_time}
+
+оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!
+        """
+        
+    else:
+        photo_id = PHOTOS['user']
+        text = f"""
+🕵️ᴜsᴇʀ: @{display_username}
+🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
+✅ обычный ᴨоᴧьзоʙᴀᴛᴇᴧь ✅
+
+🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {search_count}
+
+🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot
+
+🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи {current_time}
+
+оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!
+        """
+    
+    return text, photo_id, display_username
+
+def get_garant_info(user_id):
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT proof_link, info_link FROM garants WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return {'proof_link': result[0], 'info_link': result[1]} if result else None
+
+def get_inline_keyboard_for_profile(username):
+    if not username:
+        username = ""
+    keyboard = {
+        'inline_keyboard': [
+            [
+                {'text': '🚨 Слить скамера', 'url': 'https://t.me/antiscambaseAS'},
+                {'text': '🔗 Вечная ссылка', 'url': f'https://t.me/{username}' if username else 'https://t.me'}
+            ]
+        ]
+    }
+    return keyboard
+
+# =============== ОСНОВНЫЕ ОБРАБОТЧИКИ ===============
+def handle_my_profile(message):
+    """Обработчик для кнопки '👤 Мой профиль' и команды '/check me'"""
+    text, photo_id, display_username = check_user_profile(message, check_self=True)
+    
+    send_message(message['chat']['id'], text, 
+                 photo=photo_id,
+                 reply_markup=get_inline_keyboard_for_profile(display_username))
+
+def extract_username(text):
+    """Извлечь username из текста"""
+    patterns = [
+        r'@(\w+)',  
+        r'check\s+@(\w+)',  
+        r'/check\s+@(\w+)'  
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    
+    return None
+
+def handle_check_username(message, username_to_check):
+    """Обработчик команды /check @username"""
+    chat_id = message['chat']['id']
+    
+    text, photo_id, display_username = check_user_profile(username_to_check, check_self=False)
+    
+    # Отправляем результат
+    send_message(chat_id, text, 
+                 photo=photo_id,
+                 reply_markup=get_inline_keyboard_for_profile(display_username))
+
+def handle_check_reply(message):
+    """Обработчик /check в ответ на сообщение"""
+    chat_id = message['chat']['id']
+    
+    if 'reply_to_message' in message and 'from' in message['reply_to_message']:
+        target_user = message['reply_to_message']['from']
+        target_user_id = target_user['id']
+        
+        text, photo_id, display_username = check_user_profile(target_user_id, check_self=False)
+        
+        send_message(chat_id, text, 
+                     photo=photo_id,
+                     reply_markup=get_inline_keyboard_for_profile(display_username))
+    else:
+        send_message(chat_id, "❌ Ответьте на сообщение пользователя, чтобы проверить его")
+
+def handle_start(message):
+    """Обработчик команды /start"""
+    chat_id = message['chat']['id']
+    user_id = message['from']['id']
+    username = message['from'].get('username', f"user_{user_id}")
+    first_name = message['from'].get('first_name', 'User')
+    
+    register_user(user_id, username, first_name)
+    
+    welcome_text = """
+Anti Scam - начинающий проект, который будет помогать людям не попадатся на скам и на сомнительные услуги.
+
+⚠️В нашей предложке вы - можете слить скамера или же сообщить о подозрительной личности.
+
+🔍Чат поиска гарантов| трейдов | просто общения - @AntiScamChata
+
+🛡Наш бот для проверки на скам - @AntilScamBot.
+
+✔️Если хотите нас поддержать, то ставьте в ник приписку 'As | Ас'
+    """
+    
+    send_message(chat_id, welcome_text, 
+                 photo=PHOTOS['welcome'],
+                 reply_markup={
+                     'inline_keyboard': [[
+                         {'text': '🚨 Слить скамера', 'url': 'https://t.me/antiscambaseAS'},
+                         {'text': '📢 Новостной канал', 'url': 'https://t.me/AntiScamLaboratory'}
+                     ]]
+                 })
+    
+    # Показываем клавиатуру только в личных сообщениях
+    chat_type = message['chat'].get('type', 'private')
+    if chat_type == 'private':
+        keyboard = [
+            [{'text': '👤 Мой профиль'}],
+            [{'text': '📋 Список гарантов'}, {'text': '⚙️ Команды бота'}]
+        ]
+        
+        if is_admin(user_id):
+            keyboard.append([{'text': '👑 Админ панель'}])
+        
+        send_message(chat_id, "🎯 Выберите действие:", 
+                     reply_markup={
+                         'keyboard': keyboard,
+                         'resize_keyboard': True
+                     })
+
 # =============== МОДЕРАТОРСКИЕ КОМАНДЫ ДЛЯ ЧАТА ===============
 @admin_required
 def handle_open_command(message):
@@ -838,315 +1253,6 @@ def handle_del_scammer_reply_command(message):
                     f"📛 Теперь обычный пользователь")
     else:
         send_message(chat_id, f"❌ {result_message}")
-
-# =============== ТЕЛЕГРАМ API ФУНКЦИИ ===============
-def send_message(chat_id, text, parse_mode='HTML', reply_markup=None, photo=None):
-    try:
-        if photo:
-            url = f'{TELEGRAM_API_URL}/sendPhoto'
-            data = {
-                'chat_id': chat_id,
-                'photo': photo,
-                'caption': text,
-                'parse_mode': parse_mode
-            }
-        else:
-            url = f'{TELEGRAM_API_URL}/sendMessage'
-            data = {
-                'chat_id': chat_id,
-                'text': text,
-                'parse_mode': parse_mode
-            }
-        
-        if reply_markup:
-            data['reply_markup'] = json.dumps(reply_markup)
-        
-        response = requests.post(url, json=data, timeout=10)
-        result = response.json()
-        
-        if not result.get('ok'):
-            logger.error(f"Ошибка отправки: {result.get('description')}")
-        
-        return result
-    except Exception as e:
-        logger.error(f"Ошибка отправки: {e}")
-        return {'ok': False}
-
-def delete_message(chat_id, message_id):
-    """Удалить сообщение"""
-    try:
-        url = f'{TELEGRAM_API_URL}/deleteMessage'
-        data = {
-            'chat_id': chat_id,
-            'message_id': message_id
-        }
-        
-        response = requests.post(url, json=data, timeout=10)
-        return response.json()
-    except Exception as e:
-        logger.error(f"Ошибка удаления сообщения: {e}")
-        return {'ok': False}
-
-# =============== ДЕКОРАТОР ПРОВЕРКИ АДМИНА ===============
-def admin_required(func):
-    """Декоратор для проверки прав администратора"""
-    @wraps(func)
-    def wrapper(message):
-        user_id = message['from']['id']
-        if user_id != ADMIN_ID and get_user_status(user_id) != 'admin':
-            # В группах не показываем сообщение об отсутствии прав
-            chat_type = message['chat'].get('type', 'private')
-            if chat_type == 'private':
-                send_message(message['chat']['id'], "⛔ У вас нет прав администратора!")
-            return None
-        return func(message)
-    return wrapper
-
-# =============== УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ПРОВЕРКИ ===============
-def check_user_profile(user_input, check_self=False):
-    """Универсальная функция проверки профиля"""
-    user_id = None
-    username = None
-    
-    # Определяем тип входных данных
-    if isinstance(user_input, dict):  # Сообщение от пользователя
-        user_id = user_input['from']['id']
-        username = user_input['from'].get('username', f"user_{user_id}")
-    elif isinstance(user_input, str):  # Username
-        username = user_input.replace('@', '')
-        user_id = get_user_id_by_username(username)
-        
-        if not user_id:
-            # Если не нашли пользователя, создаем временный ID
-            user_id = hash(username) % 1000000000
-            logger.info(f"Пользователь @{username} не найден, создан временный ID: {user_id}")
-    elif isinstance(user_input, int):  # User ID
-        user_id = user_input
-        username = get_username_by_user_id(user_id) or f"user_{user_id}"
-    
-    # Регистрируем пользователя если его нет
-    if user_id and not get_user_info(user_id):
-        register_user(user_id, username, "")
-    
-    status = get_user_status(user_id)
-    
-    # Увеличиваем счетчик проверок если проверяем не себя
-    if not check_self and user_id:
-        increment_search_count(user_id)
-    
-    user_info = get_user_info(user_id)
-    search_count = user_info['search_count'] if user_info else 1
-    current_time = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-    display_username = user_info['username'] if user_info else username
-    
-    # Логируем для отладки
-    logger.info(f"Проверка: user_id={user_id}, username={username}, status={status}, display_username={display_username}")
-    
-    if status == 'scammer':
-        photo_id = PHOTOS['scammer']
-        scammer_info = get_scammer_info(user_id)
-        proofs = scammer_info['proof_link'] if scammer_info else "(пруфы на скам)"
-        
-        text = f"""
-🕵️ᴜsᴇʀ: @{display_username}
-🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
-📍обнᴀᴩужᴇн ᴄᴋᴀʍᴇᴩ
-
-ʙᴄᴇ ᴨᴩуɸы нᴀ ᴄᴋᴀʍ ⬇️
-{proofs}
-
-ᴨоᴧьзоʙᴀᴛᴇᴧь ᴄ ᴨᴧохой ᴩᴇᴨуᴛᴀциᴇй❌
-дᴧя ʙᴀɯᴇй жᴇ бᴇзоᴨᴀᴄноᴄᴛи ᴧучɯᴇ зᴀбᴧоᴋиᴩоʙᴀᴛь ᴇᴦо✅
-
-🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {search_count}
-
-🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot
-
-🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи {current_time}
-
-оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!
-        """
-        
-    elif status == 'garant':
-        photo_id = PHOTOS['garant']
-        garant_info = get_garant_info(user_id)
-        info_link = garant_info['info_link'] if garant_info else "(ссылка на инфа)"
-        proof_link = garant_info['proof_link'] if garant_info else "(ссылка на пруфы)"
-        
-        text = f"""
-🕵️ᴜsᴇʀ: @{display_username}
-🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
-💯яʙᴧяᴇᴛᴄя ᴦᴀᴩᴀнᴛоʍ бᴀзы
-
-ᴇᴦо [ᴇᴇ] инɸо: {info_link}
-ᴇᴦо [ᴇᴇ] ᴨᴩуɸы: {proof_link}
-
-🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {search_count}
-
-🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot
-
-🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи {current_time}
-
-оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!
-        """
-        
-    elif status == 'admin':
-        photo_id = PHOTOS['admin']
-        added_scammers = user_info['added_scammers'] if user_info else 0
-        
-        text = f"""
-🕵️ᴜsᴇʀ: @{display_username}
-🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
-💯яʙᴧяᴇᴛᴄя администратором бᴀзы
-
-Добавленно скамеров - {added_scammers}
-
-🔎ᴨоᴧьзоʙᴀᴛᴧя иᴄᴋᴀᴧи: {search_count}
-🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot
-
-🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи {current_time}
-
-оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!
-        """
-        
-    else:
-        photo_id = PHOTOS['user']
-        text = f"""
-🕵️ᴜsᴇʀ: @{display_username}
-🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
-✅ обычный ᴨоᴧьзоʙᴀᴛᴇᴧь ✅
-
-🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {search_count}
-
-🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot
-
-🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи {current_time}
-
-оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!
-        """
-    
-    return text, photo_id, display_username
-
-def get_garant_info(user_id):
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT proof_link, info_link FROM garants WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    return {'proof_link': result[0], 'info_link': result[1]} if result else None
-
-def get_inline_keyboard_for_profile(username):
-    if not username:
-        username = ""
-    keyboard = {
-        'inline_keyboard': [
-            [
-                {'text': '🚨 Слить скамера', 'url': 'https://t.me/antiscambaseAS'},
-                {'text': '🔗 Вечная ссылка', 'url': f'https://t.me/{username}' if username else 'https://t.me'}
-            ]
-        ]
-    }
-    return keyboard
-
-# =============== ОСНОВНЫЕ ОБРАБОТЧИКИ ===============
-def handle_my_profile(message):
-    """Обработчик для кнопки '👤 Мой профиль' и команды '/check me'"""
-    text, photo_id, display_username = check_user_profile(message, check_self=True)
-    
-    send_message(message['chat']['id'], text, 
-                 photo=photo_id,
-                 reply_markup=get_inline_keyboard_for_profile(display_username))
-
-def extract_username(text):
-    """Извлечь username из текста"""
-    patterns = [
-        r'@(\w+)',  
-        r'check\s+@(\w+)',  
-        r'/check\s+@(\w+)'  
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1)
-    
-    return None
-
-def handle_check_username(message, username_to_check):
-    """Обработчик команды /check @username"""
-    chat_id = message['chat']['id']
-    
-    text, photo_id, display_username = check_user_profile(username_to_check, check_self=False)
-    
-    # Отправляем результат
-    send_message(chat_id, text, 
-                 photo=photo_id,
-                 reply_markup=get_inline_keyboard_for_profile(display_username))
-
-def handle_check_reply(message):
-    """Обработчик /check в ответ на сообщение"""
-    chat_id = message['chat']['id']
-    
-    if 'reply_to_message' in message and 'from' in message['reply_to_message']:
-        target_user = message['reply_to_message']['from']
-        target_user_id = target_user['id']
-        
-        text, photo_id, display_username = check_user_profile(target_user_id, check_self=False)
-        
-        send_message(chat_id, text, 
-                     photo=photo_id,
-                     reply_markup=get_inline_keyboard_for_profile(display_username))
-    else:
-        send_message(chat_id, "❌ Ответьте на сообщение пользователя, чтобы проверить его")
-
-def handle_start(message):
-    """Обработчик команды /start"""
-    chat_id = message['chat']['id']
-    user_id = message['from']['id']
-    username = message['from'].get('username', f"user_{user_id}")
-    first_name = message['from'].get('first_name', 'User')
-    
-    register_user(user_id, username, first_name)
-    
-    welcome_text = """
-Anti Scam - начинающий проект, который будет помогать людям не попадатся на скам и на сомнительные услуги.
-
-⚠️В нашей предложке вы - можете слить скамера или же сообщить о подозрительной личности.
-
-🔍Чат поиска гарантов| трейдов | просто общения - @AntiScamChata
-
-🛡Наш бот для проверки на скам - @AntilScamBot.
-
-✔️Если хотите нас поддержать, то ставьте в ник приписку 'As | Ас'
-    """
-    
-    send_message(chat_id, welcome_text, 
-                 photo=PHOTOS['welcome'],
-                 reply_markup={
-                     'inline_keyboard': [[
-                         {'text': '🚨 Слить скамера', 'url': 'https://t.me/antiscambaseAS'},
-                         {'text': '📢 Новостной канал', 'url': 'https://t.me/AntiScamLaboratory'}
-                     ]]
-                 })
-    
-    # Показываем клавиатуру только в личных сообщениях
-    chat_type = message['chat'].get('type', 'private')
-    if chat_type == 'private':
-        keyboard = [
-            [{'text': '👤 Мой профиль'}],
-            [{'text': '📋 Список гарантов'}, {'text': '⚙️ Команды бота'}]
-        ]
-        
-        if is_admin(user_id):
-            keyboard.append([{'text': '👑 Админ панель'}])
-        
-        send_message(chat_id, "🎯 Выберите действие:", 
-                     reply_markup={
-                         'keyboard': keyboard,
-                         'resize_keyboard': True
-                     })
-
-# Убрал функцию handle_photo - теперь фото будут просто игнорироваться
 
 # =============== АДМИНСКИЕ КОМАНДЫ ===============
 @admin_required
