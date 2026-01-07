@@ -10,8 +10,12 @@ from functools import wraps
 app = Flask(__name__)
 
 # =============== НАСТРОЙКИ БОТА ===============
-# ЗАМЕНИТЕ ЭТО НА ВАШ ТОКЕН БОТА!
-BOT_TOKEN = 'ВАШ_ТОКЕН_БОТА_ЗДЕСЬ'  # Пример: '8539837839:AAGbXp7uLro7T4hYVOAzKAMTqSoFOK33GkU'
+# Получаем токен из переменных окружения Render (Environment Variables)
+# В Render Dashboard добавьте переменную BOT_TOKEN со значением вашего токена
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+if not BOT_TOKEN:
+    raise ValueError("❌ Токен бота не найден! Добавьте переменную BOT_TOKEN в Environment Variables на Render")
+
 TELEGRAM_API_URL = f'https://api.telegram.org/bot{BOT_TOKEN}'
 ADMIN_ID = 8281804228  # Ваш ID для админ панели
 
@@ -249,6 +253,8 @@ def get_inline_keyboard_for_welcome():
     return keyboard
 
 def get_inline_keyboard_for_profile(username):
+    if not username:
+        username = ""
     keyboard = {
         'inline_keyboard': [
             [
@@ -424,6 +430,21 @@ def handle_bot_commands(message):
     
     send_message(message['chat']['id'], commands_text)
 
+def handle_check_command(message):
+    chat_id = message['chat']['id']
+    text = message.get('text', '')
+    
+    if text == '/check me':
+        handle_my_profile(message)
+        return
+    
+    parts = text.split()
+    if len(parts) < 2:
+        send_message(chat_id, "❌ Использование: /check @username или /check me")
+        return
+    
+    send_message(chat_id, "ℹ️ Функция проверки других пользователей в разработке")
+
 def handle_photo(message):
     chat_id = message['chat']['id']
     user_id = message['from']['id']
@@ -475,9 +496,14 @@ def webhook():
             elif text == 'Команды бота':
                 handle_bot_commands(message)
             elif text.startswith('/check'):
-                send_message(message['chat']['id'], "ℹ️ Функция проверки в разработке")
+                handle_check_command(message)
             elif text.startswith(('/add_', '/del_', '/open', '/close', '/warn', '/mut')):
-                send_message(message['chat']['id'], "ℹ️ Команда доступна только администраторам")
+                # Проверка прав администратора
+                user_id = message['from']['id']
+                if user_id != ADMIN_ID:
+                    send_message(message['chat']['id'], "⛔ У вас нет прав администратора!")
+                else:
+                    send_message(message['chat']['id'], "ℹ️ Команда доступна только администраторам (функция в разработке)")
             else:
                 send_message(message['chat']['id'], 
                             "ℹ️ Используйте кнопки или команды из меню 'Команды бота'")
@@ -490,24 +516,33 @@ def webhook():
 # Роут для проверки работы бота
 @app.route('/')
 def index():
-    return """
+    token_status = "✅ Установлен" if BOT_TOKEN and BOT_TOKEN != 'ВАШ_ТОКЕН_БОТА_ЗДЕСЬ' else "❌ НЕ УСТАНОВЛЕН"
+    
+    return f"""
     <h1>🤖 Anti Scam Bot</h1>
-    <p>Бот работает! Проверьте конфигурацию:</p>
-    <ul>
-        <li>Токен бота: {'установлен' if BOT_TOKEN != 'ВАШ_ТОКЕН_БОТА_ЗДЕСЬ' else 'НЕ УСТАНОВЛЕН'}</li>
-        <li>Webhook URL: https://ваш-домен.onrender.com/webhook</li>
-        <li>Админ ID: {ADMIN_ID}</li>
-    </ul>
-    <p>Для настройки webhook перейдите по ссылке:</p>
-    <p>https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url=https://ваш-домен.onrender.com/webhook</p>
+    <p>Бот работает на Render!</p>
+    <p><strong>Статус:</strong> {token_status}</p>
+    <p><strong>Webhook URL:</strong> https://anti-scam-bot1-1-omoy.onrender.com/webhook</p>
+    <p><strong>Админ ID:</strong> {ADMIN_ID}</p>
+    <hr>
+    <h3>Инструкция по настройке:</h3>
+    <ol>
+        <li>В Render Dashboard перейдите в Environment Variables</li>
+        <li>Добавьте переменную: <code>BOT_TOKEN = ваш_токен</code></li>
+        <li>Перезапустите приложение</li>
+        <li>Настройте webhook по ссылке:</li>
+    </ol>
+    <p><a href="https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url=https://anti-scam-bot1-1-omoy.onrender.com/webhook" target="_blank">
+        Настроить Webhook
+    </a></p>
     """
 
 # Роут для настройки webhook
 @app.route('/set_webhook', methods=['GET'])
 def set_webhook():
     try:
-        # Получаем домен из запроса
-        domain = request.host_url.rstrip('/')
+        # Получаем текущий домен
+        domain = "https://anti-scam-bot1-1-omoy.onrender.com"
         webhook_url = f'{domain}/webhook'
         
         url = f'{TELEGRAM_API_URL}/setWebhook?url={webhook_url}'
@@ -517,20 +552,46 @@ def set_webhook():
         if result.get('ok'):
             return f"""
             <h1>✅ Webhook установлен!</h1>
-            <p>URL: {webhook_url}</p>
-            <p>Результат: {result.get('description', 'Успешно')}</p>
+            <p><strong>URL:</strong> {webhook_url}</p>
+            <p><strong>Статус:</strong> {result.get('description', 'Успешно')}</p>
+            <p><a href="/">Вернуться на главную</a></p>
             """
         else:
             return f"""
             <h1>❌ Ошибка установки webhook</h1>
-            <p>Ошибка: {result.get('description', 'Неизвестная ошибка')}</p>
+            <p><strong>Ошибка:</strong> {result.get('description', 'Неизвестная ошибка')}</p>
+            <p><a href="/">Вернуться на главную</a></p>
             """
     except Exception as e:
-        return f"Ошибка: {e}"
+        return f"""
+        <h1>❌ Ошибка</h1>
+        <p><strong>Ошибка:</strong> {e}</p>
+        <p><a href="/">Вернуться на главную</a></p>
+        """
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({'status': 'ok', 'bot': 'running'})
+    return jsonify({'status': 'ok', 'bot': 'running', 'token_set': BOT_TOKEN != 'ВАШ_ТОКЕН_БОТА_ЗДЕСЬ'})
+
+# Функция для автоматической настройки webhook при запуске
+def setup_webhook():
+    try:
+        # Получаем домен из переменных окружения или используем текущий
+        domain = os.environ.get('RENDER_EXTERNAL_URL', 'https://anti-scam-bot1-1-omoy.onrender.com')
+        webhook_url = f'{domain}/webhook'
+        
+        logger.info(f"Настраиваю webhook на URL: {webhook_url}")
+        
+        url = f'{TELEGRAM_API_URL}/setWebhook?url={webhook_url}'
+        response = requests.get(url)
+        
+        result = response.json()
+        if result.get('ok'):
+            logger.info(f"✅ Webhook успешно установлен: {result.get('description')}")
+        else:
+            logger.error(f"❌ Ошибка установки webhook: {result.get('description')}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при настройке webhook: {e}")
 
 if __name__ == '__main__':
     # Инициализация базы данных
@@ -538,8 +599,13 @@ if __name__ == '__main__':
     
     logger.info("=" * 50)
     logger.info("🤖 Anti Scam Bot запускается...")
+    logger.info(f"✅ Токен получен из переменных окружения")
+    logger.info(f"✅ Webhook URL: https://anti-scam-bot1-1-omoy.onrender.com/webhook")
     logger.info("=" * 50)
     
+    # Автоматическая настройка webhook
+    setup_webhook()
+    
     # Запуск Flask сервера
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
