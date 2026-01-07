@@ -35,7 +35,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Инициализация базы данных
+# =============== ДЕКОРАТОР ПРОВЕРКИ АДМИНА ===============
+def admin_required(func):
+    """Декоратор для проверки прав администратора"""
+    @wraps(func)
+    def wrapper(message):
+        user_id = message['from']['id']
+        if user_id != ADMIN_ID and get_user_status(user_id) != 'admin':
+            send_message(message['chat']['id'], "⛔ У вас нет прав администратора!")
+            return None
+        return func(message)
+    return wrapper
+
+# =============== ФУНКЦИИ БАЗЫ ДАННЫХ ===============
 def init_db():
     conn = sqlite3.connect('bot_database.db')
     cursor = conn.cursor()
@@ -62,7 +74,8 @@ def init_db():
             reason TEXT,
             proof_link TEXT,
             added_by INTEGER,
-            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (added_by) REFERENCES users(user_id)
         )
     ''')
     
@@ -73,7 +86,8 @@ def init_db():
             proof_link TEXT,
             info_link TEXT,
             added_by INTEGER,
-            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (added_by) REFERENCES users(user_id)
         )
     ''')
     
@@ -82,7 +96,8 @@ def init_db():
             admin_id INTEGER PRIMARY KEY,
             username TEXT,
             added_by INTEGER,
-            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (added_by) REFERENCES users(user_id)
         )
     ''')
     
@@ -95,7 +110,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Функции для работы с базой данных
 def get_user_status(user_id):
     conn = sqlite3.connect('bot_database.db')
     cursor = conn.cursor()
@@ -138,6 +152,113 @@ def increment_search_count(user_id):
     conn.commit()
     conn.close()
 
+def increment_added_scammers(user_id):
+    """Увеличить счетчик добавленных скамеров"""
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET added_scammers = added_scammers + 1 WHERE user_id = ?', (user_id,))
+    conn.commit()
+    conn.close()
+
+def add_scammer(scammer_id, username, reason, proof_link, added_by):
+    """Добавить скамера в базу данных"""
+    try:
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        
+        # Добавляем в таблицу скамеров
+        cursor.execute('''
+            INSERT OR REPLACE INTO scammers (scammer_id, username, reason, proof_link, added_by) 
+            VALUES (?, ?, ?, ?, ?)
+        ''', (scammer_id, username, reason, proof_link, added_by))
+        
+        # Обновляем статус в таблице пользователей
+        cursor.execute('INSERT OR REPLACE INTO users (user_id, username, status) VALUES (?, ?, ?)',
+                      (scammer_id, username, 'scammer'))
+        
+        conn.commit()
+        conn.close()
+        
+        # Увеличиваем счетчик добавленных скамеров
+        increment_added_scammers(added_by)
+        
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении скамера: {e}")
+        return False
+
+def remove_scammer(scammer_id):
+    """Удалить скамера из базы данных"""
+    try:
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        
+        # Удаляем из таблицы скамеров
+        cursor.execute('DELETE FROM scammers WHERE scammer_id = ?', (scammer_id,))
+        
+        # Возвращаем статус 'user' в таблице пользователей
+        cursor.execute('UPDATE users SET status = ? WHERE user_id = ?', ('user', scammer_id))
+        
+        conn.commit()
+        conn.close()
+        
+        return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"Ошибка при удалении скамера: {e}")
+        return False
+
+def get_scammer_info(scammer_id):
+    """Получить информацию о скамере"""
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT username, reason, proof_link, added_by, added_at FROM scammers WHERE scammer_id = ?', (scammer_id,))
+    result = cursor.fetchone()
+    conn.close()
+    
+    if result:
+        return {
+            'username': result[0],
+            'reason': result[1],
+            'proof_link': result[2],
+            'added_by': result[3],
+            'added_at': result[4]
+        }
+    return None
+
+def list_scammers(limit=50):
+    """Получить список всех скамеров"""
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT s.scammer_id, s.username, s.reason, s.added_at, u.username as added_by_username
+        FROM scammers s
+        LEFT JOIN users u ON s.added_by = u.user_id
+        ORDER BY s.added_at DESC
+        LIMIT ?
+    ''', (limit,))
+    
+    scammers = cursor.fetchall()
+    conn.close()
+    
+    return scammers
+
+def add_admin(admin_id, username, added_by):
+    """Добавить администратора в базу данных"""
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    
+    # Добавляем в таблицу админов
+    cursor.execute('INSERT OR REPLACE INTO admins (admin_id, username, added_by) VALUES (?, ?, ?)',
+                  (admin_id, username, added_by))
+    
+    # Обновляем статус в таблице пользователей
+    cursor.execute('INSERT OR REPLACE INTO users (user_id, username, status) VALUES (?, ?, ?)',
+                  (admin_id, username, 'admin'))
+    
+    conn.commit()
+    conn.close()
+    return True
+
 def get_scammer_info(user_id):
     conn = sqlite3.connect('bot_database.db')
     cursor = conn.cursor()
@@ -154,7 +275,7 @@ def get_garant_info(user_id):
     conn.close()
     return {'proof_link': result[0], 'info_link': result[1]} if result else None
 
-# Функции для работы с Telegram API
+# =============== ФУНКЦИИ TELEGRAM API ===============
 def send_message(chat_id, text, parse_mode='HTML', reply_markup=None, photo=None):
     try:
         if photo:
@@ -187,25 +308,160 @@ def send_message(chat_id, text, parse_mode='HTML', reply_markup=None, photo=None
         logger.error(f"Ошибка отправки: {e}")
         return {'ok': False}
 
-def extract_username(text):
-    """Извлечь username из текста"""
-    # Паттерны для username
-    patterns = [
-        r'@(\w+)',  # @username
-        r'check\s+@(\w+)',  # check @username
-        r'/check\s+@(\w+)'  # /check @username
-    ]
+# =============== НОВЫЕ АДМИНСКИЕ ФУНКЦИИ ===============
+@admin_required
+def handle_add_scammer_command(message):
+    """Обработчик команды /add_scammer"""
+    chat_id = message['chat']['id']
+    admin_id = message['from']['id']
+    text = message.get('text', '')
     
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1)
+    # Формат команды: /add_scammer @username причина (proof_link)
+    # Пример: /add_scammer @scammer1 Обманул на 1000$ (https://t.me/proofs/123)
     
-    return None
+    parts = text.split(' ', 2)
+    if len(parts) < 3:
+        send_message(chat_id, 
+                    "❌ Неверный формат!\n"
+                    "Использование:\n"
+                    "<code>/add_scammer @username Причина (ссылка_на_пруфы)</code>\n\n"
+                    "Пример:\n"
+                    "<code>/add_scammer @scammer123 Обманул на 500$ при продаже аккаунта (https://t.me/proofs/123)</code>",
+                    parse_mode='HTML')
+        return
+    
+    username = parts[1].replace('@', '').strip()
+    reason_and_proof = parts[2]
+    
+    # Извлекаем proof_link из скобок
+    proof_link = None
+    match = re.search(r'\((https?://[^)]+)\)', reason_and_proof)
+    if match:
+        proof_link = match.group(1)
+        reason = reason_and_proof.replace(f'({proof_link})', '').strip()
+    else:
+        reason = reason_and_proof
+        proof_link = "Пруфы не предоставлены"
+    
+    # Генерируем ID из username (в реальном боте здесь нужно получать реальный ID)
+    scammer_id = hash(username) % 1000000000
+    
+    if add_scammer(scammer_id, username, reason, proof_link, admin_id):
+        logger.info(f"Скамер добавлен: {scammer_id} (@{username})")
+        send_message(chat_id, 
+                    f"✅ Скамер добавлен!\n\n"
+                    f"👤 @{username}\n"
+                    f"📝 Причина: {reason}\n"
+                    f"🔗 Пруфы: {proof_link}\n\n"
+                    f"ID в базе: {scammer_id}")
+    else:
+        send_message(chat_id, f"❌ Ошибка при добавлении скамера @{username}")
 
-# Функции проверки пользователей
+@admin_required
+def handle_remove_scammer_command(message):
+    """Обработчик команды /remove_scammer"""
+    chat_id = message['chat']['id']
+    text = message.get('text', '')
+    
+    parts = text.split(' ', 1)
+    if len(parts) < 2:
+        send_message(chat_id, 
+                    "❌ Неверный формат!\n"
+                    "Использование:\n"
+                    "<code>/remove_scammer @username</code>\n\n"
+                    "Пример:\n"
+                    "<code>/remove_scammer @scammer123</code>\n\n"
+                    "Или по ID:\n"
+                    "<code>/remove_scammer 123456789</code>",
+                    parse_mode='HTML')
+        return
+    
+    target = parts[1].strip()
+    
+    # Пытаемся определить, это username или ID
+    if target.startswith('@'):
+        username = target.replace('@', '')
+        scammer_id = hash(username) % 1000000000
+    else:
+        try:
+            scammer_id = int(target)
+        except ValueError:
+            send_message(chat_id, "❌ Неверный ID. Используйте @username или числовой ID")
+            return
+    
+    if remove_scammer(scammer_id):
+        send_message(chat_id, f"✅ Скамер удален из базы!\nID: {scammer_id}")
+    else:
+        send_message(chat_id, f"❌ Скамер с ID {scammer_id} не найден в базе")
+
+@admin_required
+def handle_list_scammers_command(message):
+    """Обработчик команды /list_scammers"""
+    chat_id = message['chat']['id']
+    
+    scammers = list_scammers(limit=20)
+    
+    if not scammers:
+        send_message(chat_id, "📭 База скамеров пуста")
+        return
+    
+    text = "📋 <b>Список скамеров в базе:</b>\n\n"
+    
+    for scammer in scammers:
+        scammer_id, username, reason, added_at, added_by = scammer
+        added_date = datetime.strptime(added_at, '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y')
+        
+        text += f"👤 @{username}\n"
+        text += f"🆔 ID: <code>{scammer_id}</code>\n"
+        text += f"📝 Причина: {reason[:50]}...\n" if len(reason) > 50 else f"📝 Причина: {reason}\n"
+        text += f"📅 Добавлен: {added_date}\n"
+        text += f"👮 Добавил: @{added_by if added_by else 'unknown'}\n"
+        text += "━━━━━━━━━━━━━━━━\n\n"
+    
+    text += f"\n📊 Всего в базе: {len(scammers)} скамеров"
+    
+    send_message(chat_id, text, parse_mode='HTML')
+
+@admin_required  
+def handle_scammer_info_command(message):
+    """Обработчик команды /scammer_info"""
+    chat_id = message['chat']['id']
+    text = message.get('text', '')
+    
+    parts = text.split(' ', 1)
+    if len(parts) < 2:
+        send_message(chat_id, 
+                    "❌ Неверный формат!\n"
+                    "Использование:\n"
+                    "<code>/scammer_info @username</code>\n\n"
+                    "Пример:\n"
+                    "<code>/scammer_info @scammer123</code>",
+                    parse_mode='HTML')
+        return
+    
+    target = parts[1].strip().replace('@', '')
+    scammer_id = hash(target) % 1000000000
+    
+    info = get_scammer_info(scammer_id)
+    
+    if info:
+        added_date = datetime.strptime(info['added_at'], '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y %H:%M')
+        
+        text = f"📋 <b>Информация о скамере:</b>\n\n"
+        text += f"👤 Username: @{info['username']}\n"
+        text += f"🆔 ID: <code>{scammer_id}</code>\n"
+        text += f"📝 Причина: {info['reason']}\n"
+        text += f"🔗 Пруфы: {info['proof_link']}\n"
+        text += f"📅 Дата добавления: {added_date}\n"
+        text += f"👮 Добавил администратор ID: {info['added_by']}"
+        
+        send_message(chat_id, text, parse_mode='HTML')
+    else:
+        send_message(chat_id, f"❌ Скамер @{target} не найден в базе")
+
+# =============== СУЩЕСТВУЮЩИЕ ФУНКЦИИ (без изменений) ===============
 def check_user_profile(user_id, username, check_self=False):
-    """Проверить профиль пользователя"""
+    """Проверить профиль пользователя - ОДНА функция для всех случаев"""
     
     # Регистрируем пользователя если его нет
     if not get_user_info(user_id):
@@ -320,9 +576,8 @@ def get_inline_keyboard_for_profile(username):
     }
     return keyboard
 
-# Обработчики команд
-def handle_check_me(message):
-    """Обработчик команды /check me"""
+def handle_my_profile(message):
+    """Обработчик для кнопки '👤 Мой профиль' и команды '/check me'"""
     user_id = message['from']['id']
     username = message['from'].get('username', f"user_{user_id}")
     
@@ -332,26 +587,36 @@ def handle_check_me(message):
                  photo=photo_id,
                  reply_markup=get_inline_keyboard_for_profile(display_username))
 
+def extract_username(text):
+    """Извлечь username из текста"""
+    patterns = [
+        r'@(\w+)',  
+        r'check\s+@(\w+)',  
+        r'/check\s+@(\w+)'  
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    
+    return None
+
 def handle_check_username(message, username_to_check):
     """Обработчик команды /check @username"""
     chat_id = message['chat']['id']
     checker_id = message['from']['id']
     
-    # Для демонстрации используем хэш от username как ID
     target_user_id = hash(username_to_check) % 1000000000
     
-    # Регистрируем "проверяемого" пользователя
     register_user(target_user_id, username_to_check, "User")
     
-    # Проверяем профиль
     text, photo_id, display_username = check_user_profile(target_user_id, username_to_check, check_self=False)
     
-    # Отправляем результат
     result = send_message(chat_id, text, 
                          photo=photo_id,
                          reply_markup=get_inline_keyboard_for_profile(display_username))
     
-    # Уведомление проверяющему
     if result.get('ok'):
         checker_username = message['from'].get('username', 'пользователь')
         send_message(checker_id, f"✅ Вы проверили пользователя @{username_to_check}")
@@ -365,7 +630,6 @@ def handle_check_reply(message):
         target_user_id = target_user['id']
         target_username = target_user.get('username', f"user_{target_user_id}")
         
-        # Проверяем профиль
         text, photo_id, display_username = check_user_profile(target_user_id, target_username, check_self=False)
         
         send_message(chat_id, text, 
@@ -373,6 +637,30 @@ def handle_check_reply(message):
                      reply_markup=get_inline_keyboard_for_profile(display_username))
     else:
         send_message(chat_id, "❌ Ответьте на сообщение пользователя, чтобы проверить его")
+
+@admin_required
+def handle_add_admin_command(message):
+    """Добавить администратора"""
+    chat_id = message['chat']['id']
+    text = message.get('text', '')
+    parts = text.split()
+    
+    if len(parts) < 2:
+        send_message(chat_id, "❌ Использование: /add_admin @username")
+        return
+    
+    username = parts[1].replace('@', '')
+    
+    admin_id = hash(username) % 1000000000
+    
+    if add_admin(admin_id, username, message['from']['id']):
+        logger.info(f"Администратор добавлен: {admin_id} (@{username})")
+        send_message(chat_id, f"✅ Администратор @{username} добавлен!")
+        
+        status = get_user_status(admin_id)
+        send_message(chat_id, f"ℹ️ Статус пользователя @{username}: {status}")
+    else:
+        send_message(chat_id, f"❌ Ошибка при добавлении администратора")
 
 def handle_start(message):
     chat_id = message['chat']['id']
@@ -403,12 +691,18 @@ Anti Scam - начинающий проект, который будет пом�
                      ]]
                  })
     
+    # Показываем админские кнопки только админам
+    keyboard = [
+        [{'text': '👤 Мой профиль'}],
+        [{'text': '📋 Список гарантов'}, {'text': '⚙️ Команды бота'}]
+    ]
+    
+    if get_user_status(user_id) == 'admin' or user_id == ADMIN_ID:
+        keyboard.append([{'text': '👑 Админ панель'}])
+    
     send_message(chat_id, "🎯 Выберите действие:", 
                  reply_markup={
-                     'keyboard': [
-                         [{'text': '👤 Мой профиль'}],
-                         [{'text': '📋 Список гарантов'}, {'text': '⚙️ Команды бота'}]
-                     ],
+                     'keyboard': keyboard,
                      'resize_keyboard': True
                  })
 
@@ -434,7 +728,49 @@ def handle_photo(message):
         
         send_message(chat_id, response_text)
 
-# Основной обработчик webhook
+def handle_admin_panel(message):
+    """Обработчик кнопки '👑 Админ панель'"""
+    chat_id = message['chat']['id']
+    user_id = message['from']['id']
+    
+    if get_user_status(user_id) != 'admin' and user_id != ADMIN_ID:
+        send_message(chat_id, "⛔ У вас нет прав администратора!")
+        return
+    
+    admin_text = """
+👑 <b>Админ панель</b>
+
+📋 <b>Доступные команды:</b>
+
+➕ <b>Добавить скамера:</b>
+<code>/add_scammer @username Причина (ссылка_на_пруфы)</code>
+
+➖ <b>Удалить скамера:</b>
+<code>/remove_scammer @username</code>
+<code>/remove_scammer ID_пользователя</code>
+
+📋 <b>Список скамеров:</b>
+<code>/list_scammers</code>
+
+ℹ️ <b>Инфо о скамере:</b>
+<code>/scammer_info @username</code>
+
+👑 <b>Добавить админа:</b>
+<code>/add_admin @username</code>
+
+🔍 <b>Проверить пользователя:</b>
+<code>/check @username</code>
+<code>/check me</code>
+
+📊 <b>Статистика:</b>
+<code>/stats</code>
+
+⚠️ <i>Все команды работают только с правами администратора.</i>
+    """
+    
+    send_message(chat_id, admin_text, parse_mode='HTML')
+
+# =============== ОСНОВНОЙ ОБРАБОТЧИК ===============
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
@@ -450,14 +786,19 @@ def webhook():
                 handle_photo(message)
                 return jsonify({'ok': True})
             
+            # Обработка кнопки "👑 Админ панель"
+            elif text == '👑 Админ панель':
+                handle_admin_panel(message)
+                return jsonify({'ok': True})
+            
             # Обработка команды /check в ответ на сообщение
             elif text == '/check' and 'reply_to_message' in message:
                 handle_check_reply(message)
                 return jsonify({'ok': True})
             
-            # Обработка команды /check me
-            elif text in ['/check me', '/check', '/check@AntilScam_Bot me', '/check@AntilScam_Bot']:
-                handle_check_me(message)
+            # Обработка команды /check me и кнопки "👤 Мой профиль"
+            elif text in ['/check me', '/check', '/check@AntilScam_Bot me', '/check@AntilScam_Bot', '👤 Мой профиль']:
+                handle_my_profile(message)
                 return jsonify({'ok': True})
             
             # Обработка команды /check @username
@@ -470,17 +811,38 @@ def webhook():
                                 "ℹ️ Использование:\n/check me - проверить себя\n/check @username - проверить другого пользователя\n/check (в ответ на сообщение) - проверить автора")
                 return jsonify({'ok': True})
             
+            # =========== АДМИНСКИЕ КОМАНДЫ ===========
+            # Добавить скамера
+            elif text.startswith('/add_scammer'):
+                handle_add_scammer_command(message)
+                return jsonify({'ok': True})
+            
+            # Удалить скамера
+            elif text.startswith('/remove_scammer'):
+                handle_remove_scammer_command(message)
+                return jsonify({'ok': True})
+            
+            # Список скамеров
+            elif text.startswith('/list_scammers'):
+                handle_list_scammers_command(message)
+                return jsonify({'ok': True})
+            
+            # Инфо о скамере
+            elif text.startswith('/scammer_info'):
+                handle_scammer_info_command(message)
+                return jsonify({'ok': True})
+            
+            # Добавить админа
+            elif text.startswith('/add_admin'):
+                handle_add_admin_command(message)
+                return jsonify({'ok': True})
+            
             # Обработка команды /start
             elif text == '/start' or text == '/start@AntilScam_Bot':
                 handle_start(message)
                 return jsonify({'ok': True})
             
-            # Обработка кнопок
-            elif text == '👤 Мой профиль':
-                handle_check_me(message)
-                return jsonify({'ok': True})
-            
-            # Другие команды
+            # Обработка других кнопок
             elif text == '⚙️ Команды бота':
                 commands_text = """
 🤖 Команды бота:
@@ -490,6 +852,13 @@ def webhook():
 /check @username - 🔍 Проверить пользователя
 /check me - 👤 Проверить себя
 /check (в ответ на сообщение) - 🔍 Проверить автора сообщения
+
+🛡 Для администраторов (ID: 8281804228):
+/add_scammer @username причина (ссылка_на_пруфы) - ➕ Добавить скамера
+/remove_scammer @username - ➖ Удалить скамера
+/list_scammers - 📋 Список скамеров
+/scammer_info @username - ℹ️ Информация о скамере
+/add_admin @username - 👑 Добавить администратора
 
 📸 Для получения ID фото:
 Просто отправьте фото боту, и он покажет все ID
@@ -552,6 +921,7 @@ if __name__ == '__main__':
     logger.info("=" * 50)
     logger.info("🤖 Anti Scam Bot запущен!")
     logger.info(f"✅ Токен: {BOT_TOKEN[:10]}...")
+    logger.info(f"✅ Админ ID: {ADMIN_ID}")
     logger.info("=" * 50)
     
     port = int(os.environ.get('PORT', 10000))
