@@ -1146,28 +1146,7 @@ Anti Scam - начинающий проект, который будет пом�
                          'resize_keyboard': True
                      })
 
-def handle_photo(message):
-    """Обработчик фото"""
-    chat_id = message['chat']['id']
-    user_id = message['from']['id']
-    
-    if 'photo' in message:
-        photos = message['photo']
-        
-        response_text = "📸 Информация о фотографии:\n\n"
-        response_text += f"👤 Отправитель: {message['from'].get('first_name', 'User')}\n"
-        
-        if 'caption' in message:
-            response_text += f"📝 Подпись: {message['caption']}\n\n"
-        
-        response_text += "Размеры фотографии:\n"
-        
-        for i, photo in enumerate(photos, 1):
-            response_text += f"\n{i}. Размер {photo['width']}×{photo['height']}:\n"
-            response_text += f"   📁 ID файла: {photo['file_id']}\n"
-            response_text += f"   📦 Размер файла: {photo.get('file_size', 'N/A')} байт\n"
-        
-        send_message(chat_id, response_text)
+# Убрал функцию handle_photo - теперь фото будут просто игнорироваться
 
 # =============== АДМИНСКИЕ КОМАНДЫ ===============
 @admin_required
@@ -1418,9 +1397,6 @@ def handle_commands(message):
 /id - 🆔 Показать свой ID и статус
 /id (в ответ) - 🆔 Показать ID и статус пользователя
 
-📸 <b>Для получения ID фото:</b>
-Просто отправьте фото боту, и он покажет все ID
-
 🔧 <b>Админ-панель:</b>
 Нажмите кнопку "👑 Админ панель" для быстрого доступа к командам
         """
@@ -1449,10 +1425,9 @@ def webhook():
                     delete_message(message['chat']['id'], message['message_id'])
                     return jsonify({'ok': True})
             
-            # Обработка фото
+            # Фото теперь просто игнорируются, не показываем ID
             if 'photo' in message:
-                handle_photo(message)
-                return jsonify({'ok': True})
+                return jsonify({'ok': True})  # Просто игнорируем фото
             
             # Обработка кнопки "👑 Админ панель"
             elif text == '👑 Админ панель':
