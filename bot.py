@@ -10,8 +10,8 @@ from functools import wraps
 app = Flask(__name__)
 
 # =============== НАСТРОЙКИ БОТА ===============
-# ЗАМЕНИТЕ НИЖЕ НА ВАШ ТОКЕН!
-BOT_TOKEN = 'ВАШ_ТОКЕН_БОТА_ЗДЕСЬ'
+# ЗАМЕНИТЕ ЭТО НА ВАШ ТОКЕН БОТА!
+BOT_TOKEN = 'ВАШ_ТОКЕН_БОТА_ЗДЕСЬ'  # Пример: '8539837839:AAGbXp7uLro7T4hYVOAzKAMTqSoFOK33GkU'
 TELEGRAM_API_URL = f'https://api.telegram.org/bot{BOT_TOKEN}'
 ADMIN_ID = 8281804228  # Ваш ID для админ панели
 
@@ -23,6 +23,13 @@ PHOTOS = {
     'user': 'AgACAgIAAxkBAAMbaV5d5EjzLoxlESB0a3aRaO9ENrAAAkgOaxuQvvlKzGwdJxbnZlsBAAMCAAN5AAM4BA',
     'admin': 'AgACAgIAAxkBAAMVaV5dle8QkMo02yTdfGKefimIAAEDAAJEDmsbkL75StvZ04a4hKQJAQADAgADeQADOAQ'
 }
+
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # Инициализация базы данных
 def init_db():
@@ -184,27 +191,31 @@ def get_all_garants():
 
 # Функции для работы с Telegram API
 def send_message(chat_id, text, parse_mode='HTML', reply_markup=None, photo=None):
-    if photo:
-        url = f'{TELEGRAM_API_URL}/sendPhoto'
-        data = {
-            'chat_id': chat_id,
-            'photo': photo,
-            'caption': text,
-            'parse_mode': parse_mode
-        }
-    else:
-        url = f'{TELEGRAM_API_URL}/sendMessage'
-        data = {
-            'chat_id': chat_id,
-            'text': text,
-            'parse_mode': parse_mode
-        }
-    
-    if reply_markup:
-        data['reply_markup'] = json.dumps(reply_markup)
-    
-    response = requests.post(url, json=data)
-    return response.json()
+    try:
+        if photo:
+            url = f'{TELEGRAM_API_URL}/sendPhoto'
+            data = {
+                'chat_id': chat_id,
+                'photo': photo,
+                'caption': text,
+                'parse_mode': parse_mode
+            }
+        else:
+            url = f'{TELEGRAM_API_URL}/sendMessage'
+            data = {
+                'chat_id': chat_id,
+                'text': text,
+                'parse_mode': parse_mode
+            }
+        
+        if reply_markup:
+            data['reply_markup'] = json.dumps(reply_markup)
+        
+        response = requests.post(url, json=data, timeout=10)
+        return response.json()
+    except Exception as e:
+        logger.error(f"Ошибка отправки сообщения: {e}")
+        return {'ok': False}
 
 def answer_callback_query(callback_query_id, text):
     url = f'{TELEGRAM_API_URL}/answerCallbackQuery'
@@ -242,20 +253,9 @@ def get_inline_keyboard_for_profile(username):
         'inline_keyboard': [
             [
                 {'text': 'Слить скамера', 'url': 'https://t.me/antiscambaseAS'},
-                {'text': 'Вечная ссылка', 'url': f'https://t.me/{username}'}
+                {'text': 'Вечная ссылка', 'url': f'https://t.me/{username}' if username else 'https://t.me'}
             ]
         ]
-    }
-    return keyboard
-
-def get_group_admin_keyboard():
-    keyboard = {
-        'keyboard': [
-            [{'text': '/open'}, {'text': '/close'}],
-            [{'text': '/warn'}, {'text': '/mut'}]
-        ],
-        'resize_keyboard': True,
-        'one_time_keyboard': False
     }
     return keyboard
 
@@ -424,55 +424,6 @@ def handle_bot_commands(message):
     
     send_message(message['chat']['id'], commands_text)
 
-def handle_check_command(message):
-    chat_id = message['chat']['id']
-    text = message.get('text', '')
-    
-    if text == '/check me':
-        handle_my_profile(message)
-        return
-    
-    parts = text.split()
-    if len(parts) < 2:
-        send_message(chat_id, "❌ Использование: /check @username или /check me")
-        return
-    
-    send_message(chat_id, "ℹ️ Функция проверки других пользователей в разработке")
-
-def handle_add_scammer(message):
-    chat_id = message['chat']['id']
-    user_id = message['from']['id']
-    
-    if user_id != ADMIN_ID:
-        send_message(chat_id, "⛔ У вас нет прав администратора!")
-        return
-    
-    text = message.get('text', '')
-    parts = text.split()
-    
-    if len(parts) < 4:
-        send_message(chat_id, "❌ Использование: /add_scammer @username причина ссылка_на_пруфы")
-        return
-    
-    send_message(chat_id, "✅ Скамер добавлен в базу (функция в разработке)")
-
-def handle_add_garant(message):
-    chat_id = message['chat']['id']
-    user_id = message['from']['id']
-    
-    if user_id != ADMIN_ID:
-        send_message(chat_id, "⛔ У вас нет прав администратора!")
-        return
-    
-    text = message.get('text', '')
-    parts = text.split()
-    
-    if len(parts) < 4:
-        send_message(chat_id, "❌ Использование: /add_garant @username ссылка_на_био ссылка_на_пруфы")
-        return
-    
-    send_message(chat_id, "✅ Гарант добавлен в базу (функция в разработке)")
-
 def handle_photo(message):
     chat_id = message['chat']['id']
     user_id = message['from']['id']
@@ -503,63 +454,92 @@ def handle_photo(message):
                 f.write(f"Photo ID: {photo['file_id']}\n")
             f.write(f"{'='*50}\n")
 
-# Основной обработчик
+# Основной обработчик webhook
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    update = request.get_json()
-    
-    if 'message' in update:
-        message = update['message']
-        text = message.get('text', '')
+    try:
+        update = request.get_json()
         
-        if 'photo' in message:
-            handle_photo(message)
-        elif text == '/start':
-            handle_start(message)
-        elif text == 'Мой профиль':
-            handle_my_profile(message)
-        elif text == 'Список гарантов':
-            handle_garants_list(message)
-        elif text == 'Команды бота':
-            handle_bot_commands(message)
-        elif text.startswith('/check'):
-            handle_check_command(message)
-        elif text.startswith('/add_scammer'):
-            handle_add_scammer(message)
-        elif text.startswith('/add_garant'):
-            handle_add_garant(message)
-        elif text.startswith('/add_admin'):
-            send_message(message['chat']['id'], "ℹ️ Команда в разработке")
-        else:
-            send_message(message['chat']['id'], 
-                        "ℹ️ Используйте кнопки или команды из меню 'Команды бота'")
-    
-    return jsonify({'ok': True})
+        if 'message' in update:
+            message = update['message']
+            text = message.get('text', '')
+            
+            if 'photo' in message:
+                handle_photo(message)
+            elif text == '/start':
+                handle_start(message)
+            elif text == 'Мой профиль':
+                handle_my_profile(message)
+            elif text == 'Список гарантов':
+                handle_garants_list(message)
+            elif text == 'Команды бота':
+                handle_bot_commands(message)
+            elif text.startswith('/check'):
+                send_message(message['chat']['id'], "ℹ️ Функция проверки в разработке")
+            elif text.startswith(('/add_', '/del_', '/open', '/close', '/warn', '/mut')):
+                send_message(message['chat']['id'], "ℹ️ Команда доступна только администраторам")
+            else:
+                send_message(message['chat']['id'], 
+                            "ℹ️ Используйте кнопки или команды из меню 'Команды бота'")
+        
+        return jsonify({'ok': True})
+    except Exception as e:
+        logger.error(f"Ошибка обработки webhook: {e}")
+        return jsonify({'ok': False}), 500
 
-@app.route('/set_webhook', methods=['GET'])
-def set_webhook():
-    webhook_url = 'https://ваш-домен.ру/webhook'
-    url = f'{TELEGRAM_API_URL}/setWebhook?url={webhook_url}'
-    response = requests.get(url)
-    return jsonify(response.json())
-
+# Роут для проверки работы бота
 @app.route('/')
 def index():
     return """
     <h1>🤖 Anti Scam Bot</h1>
-    <p>Бот работает! Замените BOT_TOKEN на ваш токен в коде.</p>
-    <p>Инструкция:</p>
-    <ol>
-        <li>Замените 'ВАШ_ТОКЕН_БОТА_ЗДЕСЬ' на ваш токен</li>
-        <li>Настройте webhook URL на ваш домен</li>
-        <li>Перезапустите приложение</li>
-    </ol>
+    <p>Бот работает! Проверьте конфигурацию:</p>
+    <ul>
+        <li>Токен бота: {'установлен' if BOT_TOKEN != 'ВАШ_ТОКЕН_БОТА_ЗДЕСЬ' else 'НЕ УСТАНОВЛЕН'}</li>
+        <li>Webhook URL: https://ваш-домен.onrender.com/webhook</li>
+        <li>Админ ID: {ADMIN_ID}</li>
+    </ul>
+    <p>Для настройки webhook перейдите по ссылке:</p>
+    <p>https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url=https://ваш-домен.onrender.com/webhook</p>
     """
 
+# Роут для настройки webhook
+@app.route('/set_webhook', methods=['GET'])
+def set_webhook():
+    try:
+        # Получаем домен из запроса
+        domain = request.host_url.rstrip('/')
+        webhook_url = f'{domain}/webhook'
+        
+        url = f'{TELEGRAM_API_URL}/setWebhook?url={webhook_url}'
+        response = requests.get(url)
+        
+        result = response.json()
+        if result.get('ok'):
+            return f"""
+            <h1>✅ Webhook установлен!</h1>
+            <p>URL: {webhook_url}</p>
+            <p>Результат: {result.get('description', 'Успешно')}</p>
+            """
+        else:
+            return f"""
+            <h1>❌ Ошибка установки webhook</h1>
+            <p>Ошибка: {result.get('description', 'Неизвестная ошибка')}</p>
+            """
+    except Exception as e:
+        return f"Ошибка: {e}"
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({'status': 'ok', 'bot': 'running'})
+
 if __name__ == '__main__':
+    # Инициализация базы данных
     init_db()
-    print("=" * 50)
-    print("🤖 Anti Scam Bot готов к запуску!")
-    print("⚠️  ЗАМЕНИТЕ BOT_TOKEN НА ВАШ ТОКЕН!")
-    print("=" * 50)
-    app.run(debug=True, port=5000)
+    
+    logger.info("=" * 50)
+    logger.info("🤖 Anti Scam Bot запускается...")
+    logger.info("=" * 50)
+    
+    # Запуск Flask сервера
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
