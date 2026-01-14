@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # Конфигурация
 TOKEN = os.environ.get('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
 ADMIN_ID = 8281804428  # Ваш ID админа
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL', 'https://your-domain.com/')
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')
 
 # Инициализация Flask и бота
 app = Flask(__name__)
@@ -72,18 +72,6 @@ def init_db():
         )
     ''')
     
-    # Таблица варнов
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS warns (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            chat_id INTEGER,
-            reason TEXT,
-            warned_by INTEGER,
-            warned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
     # Добавляем администратора по умолчанию
     cursor.execute('INSERT OR IGNORE INTO admins (user_id, username, added_by) VALUES (?, ?, ?)', 
                   (ADMIN_ID, 'owner', ADMIN_ID))
@@ -123,7 +111,6 @@ def increment_search_count(user_id, username):
     conn = sqlite3.connect('bot_database.db')
     cursor = conn.cursor()
     
-    # Проверяем, есть ли пользователь
     cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
     if cursor.fetchone():
         cursor.execute('UPDATE users SET search_count = search_count + 1 WHERE user_id = ?', (user_id,))
@@ -138,14 +125,6 @@ def get_search_count(user_id):
     conn = sqlite3.connect('bot_database.db')
     cursor = conn.cursor()
     cursor.execute('SELECT search_count FROM users WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result else 0
-
-def get_scammers_count(admin_id):
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT COUNT(*) FROM scammers WHERE added_by = ?', (admin_id,))
     result = cursor.fetchone()
     conn.close()
     return result[0] if result else 0
@@ -172,7 +151,6 @@ def create_inline_keyboard_profile(role, user_id):
         InlineKeyboardButton('Слить скамера', url='https://t.me/antiscambaseAS')
     )
     
-    # Вечная ссылка на профиль
     if role != 'user':
         keyboard.add(
             InlineKeyboardButton('Вечная ссылка', url=f'tg://user?id={user_id}')
@@ -203,7 +181,6 @@ Anti Scam - начинающий проект, который будет пом�
 ✔️Если хотите нас поддержать, то ставьте в ник приписку 'As |  Ас'
     """
     
-    # Отправляем фото с приветствием
     try:
         bot.send_photo(
             message.chat.id,
@@ -212,7 +189,6 @@ Anti Scam - начинающий проект, который будет пом�
             reply_markup=create_main_keyboard()
         )
         
-        # Создаем инлайн кнопки под сообщением
         keyboard = InlineKeyboardMarkup()
         keyboard.row(
             InlineKeyboardButton('Слить скамера', url='https://t.me/antiscambaseAS'),
@@ -234,14 +210,10 @@ def my_profile(message):
     username = message.from_user.username or 'Нет username'
     role = get_user_role(user_id)
     
-    # Увеличиваем счетчик поисков
     increment_search_count(user_id, username)
     search_count = get_search_count(user_id)
-    
-    # Текущее время
     current_time = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     
-    # Определяем фото и текст в зависимости от роли
     if role == 'scammer':
         photo_id = 'AgACAgIAAxkBAAMTaV5df-wUhpGbu_aqFH6_Smuu2zMAAkEOaxuQvvlKUCFRzR1AGyYBAAMCAAN5AAM4BA'
         caption = f"""
@@ -266,7 +238,6 @@ def my_profile(message):
     
     elif role == 'garant':
         photo_id = 'AgACAgIAAxkBAAMZaV5d0ng4BuFtTjmwQbwAAYBsHktuAAJFDmsbkL75Ssa18PFEpyhEAQADAgADeQADOAQ'
-        # Получаем информацию о гаранте из БД
         conn = sqlite3.connect('bot_database.db')
         cursor = conn.cursor()
         cursor.execute('SELECT info_link, proofs_link FROM garanty WHERE user_id = ?', (user_id,))
@@ -295,14 +266,12 @@ def my_profile(message):
     
     elif role == 'admin':
         photo_id = 'AgACAgIAAxkBAAMVaV5dle8QkMo02yTdfGKefimIAAEDAAJEDmsbkL75StvZ04a4hKQJAQADAgADeQADOAQ'
-        scammers_added = get_scammers_count(user_id)
-        
         caption = f"""
 🕵️ᴜsᴇʀ: @{username}
 🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
 💯яʙᴧяᴇᴛᴄя администратором бᴀзы
 
-Добавленно скамеров - {scammers_added}
+Добавленно скамеров - 0
 
 🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {search_count}
 🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot
@@ -312,7 +281,7 @@ def my_profile(message):
 оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!
 """
     
-    else:  # обычный пользователь
+    else:
         photo_id = 'AgACAgIAAxkBAAMbaV5d5EjzLoxlESB0a3aRaO9ENrAAAkgOaxuQvvlKzGwdJxbnZlsBAAMCAAN5AAM4BA'
         caption = f"""
 🕵️ᴜsᴇʀ: @{username}
@@ -370,193 +339,15 @@ def bot_commands(message):
 
 ⚠️ Обратите внимание: 
 Команды для администрации не отображаются в публичном списке.
-Администраторы имеют специальные права через панель управления.
     """
     
     bot.send_message(message.chat.id, commands_text)
 
-# Команда проверки пользователя
 @bot.message_handler(commands=['check'])
 def check_user(message):
-    args = message.text.split()
-    
-    if len(args) == 1 and not message.reply_to_message:
-        bot.send_message(message.chat.id, "Использование:\n/check @username\n/check me\nИли ответьте на сообщение с /check")
-        return
-    
-    user_to_check = None
-    
-    if len(args) == 2 and args[1].lower() == 'me':
-        user_to_check = message.from_user
-    
-    elif len(args) == 2 and args[1].startswith('@'):
-        username = args[1][1:]
-        # Здесь должна быть логика получения пользователя по username
-        # Для примера используем текущего пользователя
-        user_to_check = message.from_user
-    
-    elif message.reply_to_message:
-        user_to_check = message.reply_to_message.from_user
-    
-    if user_to_check:
-        user_id = user_to_check.id
-        username = user_to_check.username or 'Нет username'
-        role = get_user_role(user_id)
-        
-        # Увеличиваем счетчик поисков
-        increment_search_count(user_id, username)
-        search_count = get_search_count(user_id)
-        
-        current_time = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-        
-        # Создаем текст результата проверки
-        if role == 'scammer':
-            result_text = f"""
-📍 Результат проверки:
+    bot.send_message(message.chat.id, "Функция проверки в разработке...")
 
-Пользователь: @{username}
-ID: {user_id}
-Статус: ⚠️ СКАМЕР ⚠️
-
-🔍 Проверок: {search_count}
-⏰ Время проверки: {current_time}
-
-Рекомендуется избегать взаимодействия с данным пользователем!
-"""
-        elif role == 'garant':
-            result_text = f"""
-📍 Результат проверки:
-
-Пользователь: @{username}
-ID: {user_id}
-Статус: ✅ ГАРАНТ ✅
-
-🔍 Проверок: {search_count}
-⏰ Время проверки: {current_time}
-
-Данный пользователь имеет статус гаранта.
-"""
-        elif role == 'admin':
-            result_text = f"""
-📍 Результат проверки:
-
-Пользователь: @{username}
-ID: {user_id}
-Статус: 👑 АДМИНИСТРАТОР 👑
-
-🔍 Проверок: {search_count}
-⏰ Время проверки: {current_time}
-
-Данный пользователь является администратором базы.
-"""
-        else:
-            result_text = f"""
-📍 Результат проверки:
-
-Пользователь: @{username}
-ID: {user_id}
-Статус: 👤 ОБЫЧНЫЙ ПОЛЬЗОВАТЕЛЬ 👤
-
-🔍 Проверок: {search_count}
-⏰ Время проверки: {current_time}
-
-Нарушений не обнаружено.
-"""
-        
-        bot.send_message(
-            message.chat.id,
-            result_text,
-            reply_markup=create_inline_keyboard_check(user_id)
-        )
-
-# Команды для администрации (только для админов)
-@bot.message_handler(commands=['add_scammer'])
-def add_scammer(message):
-    if not is_admin(message.from_user.id):
-        bot.send_message(message.chat.id, "❌ У вас нет прав для выполнения этой команды.")
-        return
-    
-    args = message.text.split(maxsplit=3)
-    if len(args) < 4:
-        bot.send_message(message.chat.id, "Использование: /add_scammer @username причина пруфы")
-        return
-    
-    username = args[1][1:] if args[1].startswith('@') else args[1]
-    reason = args[2]
-    proofs = args[3] if len(args) > 3 else "Не указаны"
-    
-    # Получаем ID пользователя по username (упрощенная версия)
-    # В реальном боте нужно использовать API Telegram для получения ID
-    user_id = hash(username) % 1000000  # Временное решение
-    
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    
-    try:
-        cursor.execute('''
-            INSERT OR REPLACE INTO scammers (user_id, username, reason, proofs, added_by)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (user_id, username, reason, proofs, message.from_user.id))
-        
-        conn.commit()
-        bot.send_message(message.chat.id, f"✅ Скамер @{username} добавлен в базу.")
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)}")
-    finally:
-        conn.close()
-
-@bot.message_handler(commands=['add_admin'])
-def add_admin_command(message):
-    if message.from_user.id != ADMIN_ID:
-        bot.send_message(message.chat.id, "❌ Только владелец бота может добавлять администраторов.")
-        return
-    
-    args = message.text.split()
-    if len(args) < 2:
-        bot.send_message(message.chat.id, "Использование: /add_admin @username")
-        return
-    
-    username = args[1][1:] if args[1].startswith('@') else args[1]
-    
-    # Получаем ID пользователя (упрощенная версия)
-    user_id = hash(username) % 1000000
-    
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    
-    try:
-        cursor.execute('INSERT OR IGNORE INTO admins (user_id, username, added_by) VALUES (?, ?, ?)', 
-                      (user_id, username, message.from_user.id))
-        
-        conn.commit()
-        bot.send_message(message.chat.id, f"✅ Администратор @{username} добавлен.")
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)}")
-    finally:
-        conn.close()
-
-# Просмотр ID фото (только для админов)
-@bot.message_handler(content_types=['photo'])
-def get_photo_id(message):
-    if is_admin(message.from_user.id):
-        photo_id = message.photo[-1].file_id
-        bot.send_message(message.chat.id, f"🖼 ID фото: {photo_id}")
-    else:
-        # Игнорируем фото от обычных пользователей
-        pass
-
-# Обработчик инлайн кнопок
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callback(call):
-    if call.data.startswith('like_'):
-        user_id = call.data.split('_')[1]
-        bot.answer_callback_query(call.id, "❤️ Ваш голос учтен!")
-        
-    elif call.data.startswith('dislike_'):
-        user_id = call.data.split('_')[1]
-        bot.answer_callback_query(call.id, "💔 Ваш голос учтен!")
-
-# Flask маршруты для вебхука
+# Flask маршруты
 @app.route('/')
 def index():
     return 'Bot is running!'
@@ -571,18 +362,17 @@ def webhook():
     else:
         return 'Bad request', 400
 
-# Запуск вебхука
+# Настройка вебхука
+@app.route('/setwebhook', methods=['GET'])
 def set_webhook():
-    time.sleep(1)
-    bot.remove_webhook()
-    time.sleep(1)
-    bot.set_webhook(url=WEBHOOK_URL + '/webhook')
-    logger.info("Webhook set to: " + WEBHOOK_URL + '/webhook')
+    webhook_url = f"{WEBHOOK_URL}/webhook"
+    if webhook_url:
+        bot.remove_webhook()
+        time.sleep(1)
+        bot.set_webhook(url=webhook_url)
+        return f"Webhook set to: {webhook_url}"
+    return "WEBHOOK_URL not set"
 
 if __name__ == '__main__':
-    # Запускаем установку вебхука в отдельном потоке
-    threading.Thread(target=set_webhook).start()
-    
-    # Запускаем Flask сервер
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
