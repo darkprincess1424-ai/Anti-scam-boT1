@@ -4,8 +4,8 @@ from telebot import types
 import sqlite3
 import logging
 from datetime import datetime
-import threading
 import time
+from flask import Flask, request, jsonify
 
 # Настройка логирования
 logging.basicConfig(
@@ -17,8 +17,10 @@ logger = logging.getLogger(__name__)
 # Конфигурация
 TOKEN = os.environ.get('BOT_TOKEN', 'ВАШ_ТОКЕН_ЗДЕСЬ')
 ADMIN_ID = 8281804428
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')
 
-# Инициализация бота
+# Инициализация Flask и бота
+app = Flask(__name__)
 bot = telebot.TeleBot(TOKEN)
 
 # Инициализация базы данных
@@ -192,6 +194,8 @@ def get_check_inline_keyboard():
         types.InlineKeyboardButton('💔', callback_data='vote_dislike')
     )
     return markup
+
+# ============== ОБРАБОТЧИКИ КОМАНД БОТА ==============
 
 # Обработчик /start
 @bot.message_handler(commands=['start'])
@@ -977,61 +981,135 @@ def my_rights_command(message):
         logger.error(f"Ошибка в my_rights_command: {e}")
         bot.send_message(message.chat.id, "❌ Ошибка при проверке прав")
 
-# Запуск бота
-def run_bot():
-    logger.info("🤖 Запускаю AntiScam Bot...")
-    print("=" * 50)
-    print("🤖 ANTI SCAM BOT ЗАПУЩЕН!")
-    print(f"👑 Админ ID: {ADMIN_ID}")
-    print("=" * 50)
-    
-    try:
-        # Получаем информацию о боте
-        bot_info = bot.get_me()
-        print(f"🤖 Бот: @{bot_info.username}")
-        print(f"🆔 ID бота: {bot_info.id}")
-        print(f"👤 Имя бота: {bot_info.first_name}")
-        print("=" * 50)
-        print("✅ Бот готов к работе!")
-        print("=" * 50)
-        
-        # Удаляем вебхук если есть
-        bot.remove_webhook()
-        
-        # Запускаем polling
-        bot.infinity_polling(timeout=60, long_polling_timeout=60)
-        
-    except Exception as e:
-        logger.error(f"Ошибка запуска бота: {e}")
-        print(f"❌ Ошибка запуска бота: {e}")
-
-# Функция для запуска Flask сервера (для Render)
-from flask import Flask, jsonify
-app = Flask(__name__)
+# ============== FLASK МАРШРУТЫ ДЛЯ WEBHOOK ==============
 
 @app.route('/')
 def home():
     return jsonify({
         "status": "running",
         "bot": "AntiScam Bot",
+        "webhook": "active",
         "timestamp": datetime.now().isoformat()
     })
 
-@app.route('/health')
-def health():
-    return jsonify({"status": "healthy"})
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return ''
+    return 'Bad request', 400
 
-def run_flask():
-    port = int(os.environ.get('PORT', 10000))
-    print(f"🌐 Flask запущен на порту: {port}")
-    app.run(host='0.0.0.0', port=port)
+@app.route('/set_webhook', methods=['GET'])
+def set_webhook():
+    try:
+        if not WEBHOOK_URL:
+            return jsonify({"error": "WEBHOOK_URL not set"})
+        
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        bot.remove_webhook()
+        time.sleep(1)
+        bot.set_webhook(url=webhook_url)
+        
+        # Проверяем установку
+        webhook_info = bot.get_webhook_info()
+        
+        return jsonify({
+            "status": "success",
+            "webhook_url": webhook_url,
+            "webhook_info": {
+                "url": webhook_info.url,
+                "has_custom_certificate": webhook_info.has_custom_certificate,
+                "pending_update_count": webhook_info.pending_update_count
+            }
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+@app.route('/delete_webhook', methods=['GET'])
+def delete_webhook():
+    try:
+        bot.remove_webhook()
+        return jsonify({"status": "success", "message": "Webhook deleted"})
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({
+        "status": "healthy",
+        "bot": "AntiScam Bot",
+        "timestamp": datetime.now().isoformat()
+    })
+
+@app.route('/status', methods=['GET'])
+def status():
+    try:
+        bot_info = bot.get_me()
+        webhook_info = bot.get_webhook_info()
+        
+        return jsonify({
+            "bot": {
+                "username": bot_info.username,
+                "id": bot_info.id,
+                "first_name": bot_info.first_name
+            },
+            "webhook": {
+                "url": webhook_info.url,
+                "pending_updates": webhook_info.pending_update_count,
+                "is_active": bool(webhook_info.url)
+            },
+            "database": {
+                "tables": ["users", "scammers", "garanty", "admins"]
+            }
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+# ============== ЗАПУСК ПРИЛОЖЕНИЯ ==============
 
 if __name__ == '__main__':
-    logger.info("🚀 Запускаю приложение...")
+    logger.info("🚀 Запускаю AntiScam Bot Webhook...")
     
-    # Запускаем Flask в отдельном потоке
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
+    # Выводим информацию о боте
+    try:
+        bot_info = bot.get_me()
+        print("=" * 50)
+        print("🤖 ANTI SCAM BOT (WEBHOOK)")
+        print(f"👤 Бот: @{bot_info.username}")
+        print(f"🆔 ID: {bot_info.id}")
+        print(f"👑 Админ ID: {ADMIN_ID}")
+        print("=" * 50)
+    except Exception as e:
+        logger.error(f"Не удалось получить информацию о боте: {e}")
     
-    # Запускаем бота в основном потоке
-    run_bot()
+    # Устанавливаем вебхук при запуске
+    if WEBHOOK_URL:
+        try:
+            logger.info(f"Устанавливаю вебхук: {WEBHOOK_URL}/webhook")
+            bot.remove_webhook()
+            time.sleep(2)
+            bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
+            
+            # Проверяем установку
+            webhook_info = bot.get_webhook_info()
+            logger.info(f"Вебхук установлен: {webhook_info.url}")
+            logger.info(f"Ожидающие обновления: {webhook_info.pending_update_count}")
+            
+        except Exception as e:
+            logger.error(f"Ошибка установки вебхука: {e}")
+            print(f"❌ Ошибка установки вебхука: {e}")
+    else:
+        logger.warning("WEBHOOK_URL не установлен. Вебхук не будет настроен.")
+        print("⚠️ ВНИМАНИЕ: WEBHOOK_URL не установлен в переменных окружения!")
+    
+    # Запускаем Flask сервер
+    port = int(os.environ.get('PORT', 10000))
+    print(f"🌐 Сервер запущен на порту: {port}")
+    print(f"📡 Webhook URL: {WEBHOOK_URL}/webhook" if WEBHOOK_URL else "📡 Webhook не настроен")
+    print("=" * 50)
+    print("✅ Бот готов к работе через webhook!")
+    print("=" * 50)
+    
+    app.run(host='0.0.0.0', port=port, debug=False)
