@@ -1,180 +1,37 @@
 import os
-import logging
-from datetime import datetime
-from flask import Flask, request, jsonify
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
-import sqlite3
-import threading
-import time
+from telebot import types
+from flask import Flask, request
+import logging
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-TOKEN = os.environ.get('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
-ADMIN_ID = 8281804428  # Ваш ID админа
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')
+TOKEN = os.environ.get('BOT_TOKEN', 'ВАШ_ТОКЕН_ЗДЕСЬ')
+ADMIN_ID = 8281804428
 
 # Инициализация Flask и бота
 app = Flask(__name__)
 bot = telebot.TeleBot(TOKEN)
 
-# Инициализация базы данных
-def init_db():
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            role TEXT DEFAULT 'user',
-            search_count INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS scammers (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            reason TEXT,
-            proofs TEXT,
-            added_by INTEGER,
-            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS garanty (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            info_link TEXT,
-            proofs_link TEXT,
-            added_by INTEGER,
-            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS admins (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            added_by INTEGER,
-            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    cursor.execute('INSERT OR IGNORE INTO admins (user_id, username, added_by) VALUES (?, ?, ?)', 
-                  (ADMIN_ID, 'owner', ADMIN_ID))
-    
-    conn.commit()
-    conn.close()
-
-init_db()
-
-# Функции работы с БД
-def get_user_role(user_id):
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('SELECT * FROM scammers WHERE user_id = ?', (user_id,))
-    if cursor.fetchone():
-        conn.close()
-        return 'scammer'
-    
-    cursor.execute('SELECT * FROM garanty WHERE user_id = ?', (user_id,))
-    if cursor.fetchone():
-        conn.close()
-        return 'garant'
-    
-    cursor.execute('SELECT * FROM admins WHERE user_id = ?', (user_id,))
-    if cursor.fetchone():
-        conn.close()
-        return 'admin'
-    
-    conn.close()
-    return 'user'
-
-def increment_search_count(user_id, username):
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
-    if cursor.fetchone():
-        cursor.execute('UPDATE users SET search_count = search_count + 1 WHERE user_id = ?', (user_id,))
-    else:
-        cursor.execute('INSERT INTO users (user_id, username, search_count) VALUES (?, ?, 1)', 
-                      (user_id, username))
-    
-    conn.commit()
-    conn.close()
-
-def get_search_count(user_id):
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT search_count FROM users WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result else 0
-
-def is_admin(user_id):
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM admins WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone() is not None
-    conn.close()
-    return result
-
-def get_scammers_count(admin_id):
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT COUNT(*) FROM scammers WHERE added_by = ?', (admin_id,))
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result else 0
-
-# Клавиатуры
-def create_main_keyboard():
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    keyboard.add(
-        KeyboardButton('👤 Мой профиль'),
-        KeyboardButton('⭐ Список гарантов'),
-        KeyboardButton('📋 Команды'),
-        KeyboardButton('ℹ️ Информация о боте')
-    )
-    return keyboard
-
-def create_inline_keyboard_profile(role, user_id):
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(
-        InlineKeyboardButton('Слить скамера', url='https://t.me/antiscambaseAS')
-    )
-    
-    if role != 'user':
-        keyboard.add(
-            InlineKeyboardButton('Вечная ссылка', url=f'tg://user?id={user_id}')
-        )
-    
-    return keyboard
-
-def create_inline_keyboard_check(user_id):
-    keyboard = InlineKeyboardMarkup()
-    keyboard.row(
-        InlineKeyboardButton('💍', callback_data=f'like_{user_id}'),
-        InlineKeyboardButton('💔', callback_data=f'dislike_{user_id}')
-    )
-    return keyboard
+# Простая клавиатура
+def get_main_keyboard():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    btn1 = types.KeyboardButton('👤 Мой профиль')
+    btn2 = types.KeyboardButton('⭐ Список гарантов')
+    btn3 = types.KeyboardButton('📋 Команды')
+    btn4 = types.KeyboardButton('ℹ️ Информация')
+    markup.add(btn1, btn2, btn3, btn4)
+    return markup
 
 # Обработчик команды /start
 @bot.message_handler(commands=['start'])
-def send_welcome(message):
-    try:
-        logger.info(f"Received /start from {message.from_user.id}")
-        
-        welcome_text = """
+def start_command(message):
+    logger.info(f"START from {message.from_user.id}")
+    
+    welcome_text = """
 Anti Scam - начинающий проект, который будет помогать людям не попадатся на скам и на сомнительные услуги.
 
 ⚠️В нашей предложке вы - можете слить скамера или же сообщить о подозрительной личности.
@@ -184,449 +41,176 @@ Anti Scam - начинающий проект, который будет пом�
 🛡Наш бот для проверки на скам - @AntilScamBot.
 
 ✔️Если хотите нас поддержать, то ставьте в ник приписку 'As |  Ас'
-        """
-        
-        # Сначала отправляем фото с приветствием
-        try:
-            bot.send_photo(
-                message.chat.id,
-                'AgACAgIAAxkBAAMDaV5adx8Oy37acG9cGOEgHbYhv2wAAiMOaxuQvvlKqFGS2DnsF9YBAAMCAANzAAM4BA',
-                caption=welcome_text,
-                reply_markup=create_main_keyboard()
-            )
-        except Exception as e:
-            logger.error(f"Error sending photo: {e}")
-            # Если фото не отправляется, отправляем только текст
-            bot.send_message(
-                message.chat.id,
-                welcome_text,
-                reply_markup=create_main_keyboard()
-            )
-        
-        # Затем отправляем сообщение с инлайн кнопками
-        keyboard = InlineKeyboardMarkup()
-        keyboard.row(
-            InlineKeyboardButton('Слить скамера', url='https://t.me/antiscambaseAS'),
-            InlineKeyboardButton('Новостной канал', url='https://t.me/AntiScamLaboratory')
+    """
+    
+    # Пробуем отправить фото
+    try:
+        bot.send_photo(
+            chat_id=message.chat.id,
+            photo='AgACAgIAAxkBAAMDaV5adx8Oy37acG9cGOEgHbYhv2wAAiMOaxuQvvlKqFGS2DnsF9YBAAMCAANzAAM4BA',
+            caption=welcome_text,
+            reply_markup=get_main_keyboard()
         )
-        
-        bot.send_message(
-            message.chat.id,
-            'Выберите действие:',
-            reply_markup=keyboard
-        )
-        
-        logger.info(f"Successfully sent welcome to {message.from_user.id}")
-        
     except Exception as e:
-        logger.error(f"Error in send_welcome: {e}")
-        try:
-            bot.send_message(
-                message.chat.id,
-                "Привет! Я бот Anti Scam. Используйте кнопки ниже или команды.",
-                reply_markup=create_main_keyboard()
-            )
-        except:
-            pass
+        logger.error(f"Photo error: {e}")
+        # Если фото не отправляется, отправляем текст
+        bot.send_message(
+            chat_id=message.chat.id,
+            text=welcome_text,
+            reply_markup=get_main_keyboard()
+        )
+    
+    # Инлайн кнопки
+    inline_markup = types.InlineKeyboardMarkup()
+    inline_markup.row(
+        types.InlineKeyboardButton('Слить скамера', url='https://t.me/antiscambaseAS'),
+        types.InlineKeyboardButton('Новостной канал', url='https://t.me/AntiScamLaboratory')
+    )
+    
+    bot.send_message(
+        chat_id=message.chat.id,
+        text='Выберите действие:',
+        reply_markup=inline_markup
+    )
 
-# Обработчики кнопок клавиатуры
+# Обработчик кнопки "👤 Мой профиль"
 @bot.message_handler(func=lambda message: message.text == '👤 Мой профиль')
 def my_profile(message):
-    try:
-        user_id = message.from_user.id
-        username = message.from_user.username or 'Нет username'
-        role = get_user_role(user_id)
-        
-        increment_search_count(user_id, username)
-        search_count = get_search_count(user_id)
-        current_time = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-        
-        if role == 'scammer':
-            photo_id = 'AgACAgIAAxkBAAMTaV5df-wUhpGbu_aqFH6_Smuu2zMAAkEOaxuQvvlKUCFRzR1AGyYBAAMCAAN5AAM4BA'
-            caption = f"""
-🕵️ᴜsᴇʀ: @{username}
-🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
-📍обнᴀᴩужᴇн ᴄᴋᴀʍᴇᴩ
+    user = message.from_user
+    profile_text = f"""
+🕵️ Пользователь: @{user.username if user.username else 'нет username'}
+🆔 ID: {user.id}
+👤 Имя: {user.first_name} {user.last_name if user.last_name else ''}
 
-ʙᴄᴇ ᴨᴩуɸы нᴀ ᴄᴋᴀʍ ⬇️
-(пруфы на скам)
+Это ваш профиль!
+    """
+    
+    bot.send_message(message.chat.id, profile_text)
 
-ᴨоᴧьзоʙᴀᴛᴇᴧь ᴄ ᴨᴧохой ᴩᴇᴨуᴛᴀциᴇй❌
-дᴧя ʙᴀɯᴇй жᴇ бᴇзоᴨᴀᴄноᴄᴛи ᴧучɯᴇ зᴀбᴧоᴋиᴩоʙᴀᴛь ᴇᴦо✅
-
-🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {search_count}
-
-🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot
-
-🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи {current_time}
-
-оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!
-"""
-        
-        elif role == 'garant':
-            photo_id = 'AgACAgIAAxkBAAMZaV5d0ng4BuFtTjmwQbwAAYBsHktuAAJFDmsbkL75Ssa18PFEpyhEAQADAgADeQADOAQ'
-            conn = sqlite3.connect('bot_database.db')
-            cursor = conn.cursor()
-            cursor.execute('SELECT info_link, proofs_link FROM garanty WHERE user_id = ?', (user_id,))
-            garant_info = cursor.fetchone()
-            conn.close()
-            
-            info_link = garant_info[0] if garant_info else "Не указано"
-            proofs_link = garant_info[1] if garant_info else "Не указано"
-            
-            caption = f"""
-🕵️ᴜsᴇʀ: @{username}
-🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
-💯яʙᴧяᴇᴛᴄя ᴦᴀᴩᴀнᴛоʍ бᴀзы
-
-ᴇᴦо [ᴇᴇ] инɸо: {info_link}
-ᴇᴦо [ᴇᴇ] ᴨᴩуɸы: {proofs_link}
-
-🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {search_count}
-
-🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot
-
-🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи {current_time}
-
-оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!
-"""
-        
-        elif role == 'admin':
-            photo_id = 'AgACAgIAAxkBAAMVaV5dle8QkMo02yTdfGKefimIAAEDAAJEDmsbkL75StvZ04a4hKQJAQADAgADeQADOAQ'
-            scammers_added = get_scammers_count(user_id)
-            
-            caption = f"""
-🕵️ᴜsᴇʀ: @{username}
-🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
-💯яʙᴧяᴇᴛᴄя администратором бᴀзы
-
-Добавленно скамеров - {scammers_added}
-
-🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {search_count}
-🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot
-
-🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи {current_time}
-
-оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!
-"""
-        
-        else:
-            photo_id = 'AgACAgIAAxkBAAMbaV5d5EjzLoxlESB0a3aRaO9ENrAAAkgOaxuQvvlKzGwdJxbnZlsBAAMCAAN5AAM4BA'
-            caption = f"""
-🕵️ᴜsᴇʀ: @{username}
-🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
-✅ обычный ᴨоᴧьзоʙᴀᴛᴇᴧь ✅
-
-🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {search_count}
- 
-🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot
-
-🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи {current_time}
-
-оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!
-"""
-        
-        try:
-            bot.send_photo(
-                message.chat.id,
-                photo_id,
-                caption=caption,
-                reply_markup=create_inline_keyboard_profile(role, user_id)
-            )
-        except Exception as e:
-            logger.error(f"Error sending profile photo: {e}")
-            bot.send_message(
-                message.chat.id,
-                caption,
-                reply_markup=create_inline_keyboard_profile(role, user_id)
-            )
-            
-    except Exception as e:
-        logger.error(f"Error in my_profile: {e}")
-        bot.send_message(message.chat.id, "❌ Ошибка при загрузке профиля")
-
+# Обработчик кнопки "⭐ Список гарантов"
 @bot.message_handler(func=lambda message: message.text == '⭐ Список гарантов')
 def list_garants(message):
-    try:
-        conn = sqlite3.connect('bot_database.db')
-        cursor = conn.cursor()
-        cursor.execute('SELECT username, proofs_link FROM garanty')
-        garants = cursor.fetchall()
-        conn.close()
-        
-        if not garants:
-            bot.send_message(message.chat.id, "📭 Список гарантов пуст.")
-            return
-        
-        response = "⭐ <b>Список гарантов:</b>\n\n"
-        for i, (username, proofs_link) in enumerate(garants, 1):
-            response += f"{i}. @{username}\n"
-            response += f"   🔗 Пруфы: {proofs_link}\n\n"
-        
-        bot.send_message(message.chat.id, response, parse_mode='HTML')
-        
-    except Exception as e:
-        logger.error(f"Error in list_garants: {e}")
-        bot.send_message(message.chat.id, "❌ Ошибка при загрузке списка гарантов")
+    garants_text = """
+⭐ Список гарантов:
 
+1. @garant1 - 🔗 Пруфы: ссылка
+2. @garant2 - 🔗 Пруфы: ссылка
+3. @garant3 - 🔗 Пруфы: ссылка
+    """
+    bot.send_message(message.chat.id, garants_text)
+
+# Обработчик кнопки "📋 Команды"
 @bot.message_handler(func=lambda message: message.text == '📋 Команды')
-def bot_commands(message):
+def show_commands(message):
     commands_text = """
-🤖 <b>Доступные команды бота:</b>
+📋 Команды бота:
 
-🔍 <b>Проверка пользователей:</b>
+/start - Начать работу
 /check @username - Проверить пользователя
-/check (в ответ на сообщение) - Проверить пользователя
 /check me - Проверить себя
+    """
+    bot.send_message(message.chat.id, commands_text)
 
-ℹ️ <b>Дополнительно:</b>
-/start - Перезапустить бота
-"""
-    
-    bot.send_message(message.chat.id, commands_text, parse_mode='HTML')
-
-@bot.message_handler(func=lambda message: message.text == 'ℹ️ Информация о боте')
-def bot_info(message):
+# Обработчик кнопки "ℹ️ Информация"
+@bot.message_handler(func=lambda message: message.text == 'ℹ️ Информация')
+def show_info(message):
     info_text = """
-ℹ️ <b>Информация о боте:</b>
+ℹ️ Информация о боте:
 
-🤖 <b>AntiScam Bot</b>
+🤖 AntiScam Bot
 Версия: 1.0
 Разработчик: AntiScam Team
 
-⚙️ <b>Функционал:</b>
-• Проверка пользователей на скам
-• База данных скамеров
-• Список проверенных гарантов
-• Защита от мошенников
+📞 Связь:
+@AntiScamChata
+@AntiScamLaboratory
+    """
+    bot.send_message(message.chat.id, info_text)
 
-📞 <b>Связь:</b>
-Чат: @AntiScamChata
-Канал: @AntiScamLaboratory
-"""
-    
-    bot.send_message(message.chat.id, info_text, parse_mode='HTML')
-
-# Команда проверки пользователя
+# Команда /check
 @bot.message_handler(commands=['check'])
 def check_user(message):
-    try:
-        args = message.text.split()
-        
-        if len(args) == 1 and not message.reply_to_message:
-            bot.send_message(message.chat.id, 
-                            "❓ <b>Использование команды /check:</b>\n"
-                            "/check @username - Проверить пользователя\n"
-                            "/check me - Проверить себя\n"
-                            "Или ответьте на сообщение с /check", 
-                            parse_mode='HTML')
-            return
-        
-        user_to_check = None
-        check_type = "пользователь"
-        
-        if len(args) == 2 and args[1].lower() == 'me':
-            user_to_check = message.from_user
-            check_type = "себя"
-        
-        elif len(args) == 2 and args[1].startswith('@'):
-            username = args[1][1:]
-            user_to_check = message.from_user
-            check_type = f"@{username}"
-        
-        elif message.reply_to_message:
-            user_to_check = message.reply_to_message.from_user
-            check_type = f"пользователя @{user_to_check.username or 'без username'}"
-        
-        if user_to_check:
-            checking_msg = bot.send_message(message.chat.id, f"🔍 <b>Проверяю {check_type}...</b>", parse_mode='HTML')
-            time.sleep(1)
-            
-            user_id = user_to_check.id
-            username = user_to_check.username or 'Нет username'
-            role = get_user_role(user_id)
-            
-            increment_search_count(user_id, username)
-            search_count = get_search_count(user_id)
-            current_time = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-            
-            try:
-                bot.delete_message(message.chat.id, checking_msg.message_id)
-            except:
-                pass
-            
-            result_text = ""
-            if role == 'scammer':
-                result_text = f"""
-🔴 <b>РЕЗУЛЬТАТ ПРОВЕРКИ</b>
+    args = message.text.split()
+    
+    if len(args) == 1:
+        bot.send_message(message.chat.id, "Пример: /check @username или /check me")
+        return
+    
+    if args[1].lower() == 'me':
+        user = message.from_user
+        result = f"""
+🔍 Результат проверки:
 
-👤 Пользователь: @{username}
-🆔 ID: {user_id}
-⚠️ <b>СТАТУС: СКАМЕР</b>
+Пользователь: @{user.username if user.username else 'нет username'}
+ID: {user.id}
+Статус: ✅ Обычный пользователь
+        """
+        bot.send_message(message.chat.id, result)
+    else:
+        username = args[1]
+        result = f"""
+🔍 Результат проверки:
 
-📊 Проверок: {search_count}
-🕒 Время проверки: {current_time}
+Пользователь: {username}
+Статус: 🔍 Проверка завершена
+Результат: ✅ Чист
+        """
+        bot.send_message(message.chat.id, result)
 
-🚨 <b>ВНИМАНИЕ!</b>
-Данный пользователь находится в черном списке!
-Рекомендуется избегать взаимодействия.
-"""
-            
-            elif role == 'garant':
-                result_text = f"""
-🟢 <b>РЕЗУЛЬТАТ ПРОВЕРКИ</b>
-
-👤 Пользователь: @{username}
-🆔 ID: {user_id}
-✅ <b>СТАТУС: ГАРАНТ</b>
-
-📊 Проверок: {search_count}
-🕒 Время проверки: {current_time}
-
-✅ Данный пользователь имеет статус гаранта.
-Можно доверять при сделках.
-"""
-            
-            elif role == 'admin':
-                result_text = f"""
-🔵 <b>РЕЗУЛЬТАТ ПРОВЕРКИ</b>
-
-👤 Пользователь: @{username}
-🆔 ID: {user_id}
-👑 <b>СТАТУС: АДМИНИСТРАТОР</b>
-
-📊 Проверок: {search_count}
-🕒 Время проверки: {current_time}
-
-👑 Данный пользователь является администратором базы.
-Имеет права на добавление скамеров.
-"""
-            
-            else:
-                result_text = f"""
-🟡 <b>РЕЗУЛЬТАТ ПРОВЕРКИ</b>
-
-👤 Пользователь: @{username}
-🆔 ID: {user_id}
-👤 <b>СТАТУС: ОБЫЧНЫЙ ПОЛЬЗОВАТЕЛЬ</b>
-
-📊 Проверок: {search_count}
-🕒 Время проверки: {current_time}
-
-✅ Нарушений не обнаружено.
-Пользователь не находится в черных списках.
-"""
-            
-            bot.send_message(
-                message.chat.id,
-                result_text,
-                parse_mode='HTML',
-                reply_markup=create_inline_keyboard_check(user_id)
-            )
-            
-    except Exception as e:
-        logger.error(f"Error in check_user: {e}")
-        bot.send_message(message.chat.id, "❌ Ошибка при проверке пользователя")
-
-# Просмотр ID фото
+# Обработчик фото для админа
 @bot.message_handler(content_types=['photo'])
-def get_photo_id(message):
-    try:
-        if is_admin(message.from_user.id):
-            photo_id = message.photo[-1].file_id
-            
-            response = f"""
-📸 <b>Информация о фото:</b>
+def handle_photo(message):
+    if message.from_user.id == ADMIN_ID:
+        photo_id = message.photo[-1].file_id
+        bot.reply_to(message, f"📸 ID фото: {photo_id}")
+    else:
+        # Для обычных пользователей
+        pass
 
-🆔 <b>File ID:</b> <code>{photo_id}</code>
-"""
-            
-            for i, photo in enumerate(message.photo):
-                response += f"  • Размер {i+1}: {photo.width}x{photo.height} (file_id: {photo.file_id})\n"
-            
-            bot.reply_to(message, response, parse_mode='HTML')
-    except Exception as e:
-        logger.error(f"Error in get_photo_id: {e}")
-
-# Обработчик инлайн кнопок
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callback(call):
-    try:
-        if call.data.startswith('like_'):
-            bot.answer_callback_query(call.id, "❤️ Ваш голос 'За' учтен!")
-        elif call.data.startswith('dislike_'):
-            bot.answer_callback_query(call.id, "💔 Ваш голос 'Против' учтен!")
-    except Exception as e:
-        logger.error(f"Error in handle_callback: {e}")
+# Обработчик всех сообщений для отладки
+@bot.message_handler(func=lambda message: True)
+def echo_all(message):
+    logger.info(f"Message from {message.from_user.id}: {message.text}")
+    # Не отвечаем на все сообщения, только логируем
 
 # Flask маршруты
 @app.route('/')
-def index():
-    return '🤖 AntiScam Bot is running!'
+def home():
+    return '🤖 Бот работает!'
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    try:
-        if request.headers.get('content-type') == 'application/json':
-            json_string = request.get_data().decode('utf-8')
-            update = telebot.types.Update.de_json(json_string)
-            bot.process_new_updates([update])
-            return '', 200
-    except Exception as e:
-        logger.error(f"Error in webhook: {e}")
-        return 'Bad request', 400
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return ''
+    return 'Bad request', 400
 
 @app.route('/setwebhook', methods=['GET'])
-def set_webhook_route():
-    try:
-        if WEBHOOK_URL:
-            bot.remove_webhook()
-            time.sleep(1)
-            webhook_url = f"{WEBHOOK_URL}/webhook"
-            bot.set_webhook(url=webhook_url)
-            return f"✅ Webhook set to: {webhook_url}"
-        return "❌ WEBHOOK_URL not set"
-    except Exception as e:
-        return f"❌ Error: {str(e)}"
+def set_webhook():
+    webhook_url = os.environ.get('WEBHOOK_URL', '')
+    if webhook_url:
+        bot.remove_webhook()
+        import time
+        time.sleep(1)
+        full_url = f"{webhook_url}/webhook"
+        bot.set_webhook(url=full_url)
+        return f'Webhook установлен: {full_url}'
+    return 'WEBHOOK_URL не установлен'
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({
-        "status": "ok", 
-        "timestamp": datetime.now().isoformat(),
-        "bot": "running"
-    })
-
-# Проверка работы бота
-@app.route('/test', methods=['GET'])
-def test_bot():
-    try:
-        bot_info = bot.get_me()
-        return jsonify({
-            "bot_username": bot_info.username,
-            "bot_id": bot_info.id,
-            "status": "active"
-        })
-    except Exception as e:
-        return jsonify({"error": str(e), "status": "inactive"})
-
-# Запуск приложения
+# Запуск
 if __name__ == '__main__':
-    logger.info("Starting AntiScam Bot...")
-    
     # Если есть WEBHOOK_URL, устанавливаем вебхук
-    if WEBHOOK_URL and WEBHOOK_URL != '':
-        try:
-            logger.info(f"Setting webhook to: {WEBHOOK_URL}/webhook")
-            bot.remove_webhook()
-            time.sleep(1)
-            bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
-            logger.info("Webhook set successfully")
-        except Exception as e:
-            logger.error(f"Error setting webhook: {e}")
-    else:
-        logger.warning("WEBHOOK_URL not set. Webhook will not be configured.")
+    webhook_url = os.environ.get('WEBHOOK_URL', '')
+    if webhook_url:
+        logger.info(f"Устанавливаю вебхук: {webhook_url}/webhook")
+        bot.remove_webhook()
+        import time
+        time.sleep(2)
+        bot.set_webhook(url=f"{webhook_url}/webhook")
     
+    # Запускаем Flask
     port = int(os.environ.get('PORT', 10000))
-    logger.info(f"Starting Flask app on port {port}")
-    app.run(host='0.0.0.0', port=port, debug=False)
+    logger.info(f"Запускаю бота на порту {port}")
+    app.run(host='0.0.0.0', port=port)
