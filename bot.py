@@ -1,1261 +1,588 @@
 import os
 import logging
+from datetime import datetime
+from flask import Flask, request, jsonify
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from telebot import types
 import sqlite3
-import sys
 import threading
 import time
-from datetime import datetime, timedelta
-from flask import Flask, jsonify, request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ChatPermissions
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 
-# ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ========== FLASK ВЕБ-СЕРВЕР ДЛЯ UPTIMEROBOT ==========
-web_app = Flask(__name__)
+# Конфигурация
+TOKEN = os.environ.get('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
+ADMIN_ID = 8281804428  # Ваш ID админа
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL', 'https://your-domain.com/')
 
-# Переменная для отслеживания состояния бота
-bot_status = {
-    "status": "running",
-    "started_at": datetime.now().isoformat(),
-    "last_ping": datetime.now().isoformat(),
-    "total_requests": 0
-}
-
-@web_app.route('/')
-def home():
-    """Главная страница для проверки"""
-    bot_status["total_requests"] += 1
-    return jsonify({
-        "status": "online",
-        "service": "anti-scam-bot",
-        "bot_status": bot_status["status"],
-        "uptime": str(datetime.now() - datetime.fromisoformat(bot_status["started_at"])),
-        "requests": bot_status["total_requests"],
-        "timestamp": datetime.now().isoformat()
-    })
-
-@web_app.route('/health')
-def health():
-    """Health check для Render и UptimeRobot"""
-    bot_status["total_requests"] += 1
-    bot_status["last_ping"] = datetime.now().isoformat()
-    
-    return jsonify({
-        "status": "healthy",
-        "service": "anti-scam-bot",
-        "bot": bot_status["status"],
-        "last_ping": bot_status["last_ping"],
-        "timestamp": datetime.now().isoformat(),
-        "message": "🤖 Бот работает нормально"
-    }), 200
-
-@web_app.route('/ping')
-def ping():
-    """Простой ping для UptimeRobot"""
-    bot_status["total_requests"] += 1
-    bot_status["last_ping"] = datetime.now().isoformat()
-    
-    return jsonify({
-        "status": "pong",
-        "timestamp": datetime.now().isoformat()
-    }), 200
-
-@web_app.route('/status')
-def status():
-    """Статус бота"""
-    bot_status["total_requests"] += 1
-    
-    try:
-        conn = sqlite3.connect('bot_database.db', check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM scammers")
-        scammer_count = cursor.fetchone()[0] or 0
-        
-        cursor.execute("SELECT COUNT(*) FROM garants")
-        garant_count = cursor.fetchone()[0] or 0
-        
-        cursor.execute("SELECT COUNT(*) FROM search_history")
-        search_count = cursor.fetchone()[0] or 0
-        
-        cursor.execute("SELECT COUNT(*) FROM chat_admins")
-        chat_admins_count = cursor.fetchone()[0] or 0
-        
-        conn.close()
-        
-        stats = {
-            "scammers": scammer_count,
-            "garants": garant_count,
-            "searches": search_count,
-            "chat_admins": chat_admins_count
-        }
-    except:
-        stats = {"error": "Не удалось получить статистику"}
-    
-    return jsonify({
-        "status": "online",
-        "bot": bot_status,
-        "database_stats": stats,
-        "timestamp": datetime.now().isoformat()
-    })
-
-def run_web_server():
-    """Запуск веб-сервера в отдельном потоке"""
-    port = int(os.environ.get("PORT", 10000))
-    print(f"🌐 Запуск веб-сервера на порту {port}")
-    print(f"📊 Health check: http://0.0.0.0:{port}/health")
-    print(f"🏓 Ping: http://0.0.0.0:{port}/ping")
-    print(f"📈 Status: http://0.0.0.0:{port}/status")
-    
-    web_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
-
-# ========== ТЕЛЕГРАМ БОТ ==========
-TOKEN = os.environ.get("BOT_TOKEN")
-if not TOKEN:
-    print("❌ ОШИБКА: BOT_TOKEN не найден в переменных окружения!")
-    print("💡 Добавьте BOT_TOKEN в Render Dashboard → Environment")
-    sys.exit(1)
-
-ADMIN_ID = 8281804228  # Ваш ID
-
-print(f"🚀 Запуск Anti-Scam Bot с мониторингом...")
-print(f"👑 Админ ID: {ADMIN_ID}")
-print("✅ Токен бота найден")
-
-# ФИКС: Используем ThreadPool для SQLite соединений
-class Database:
-    def __init__(self):
-        self.connections = {}
-        
-    def get_connection(self, thread_id):
-        """Получить соединение с базой данных для текущего потока"""
-        if thread_id not in self.connections:
-            self.connections[thread_id] = sqlite3.connect('bot_database.db', check_same_thread=False)
-        return self.connections[thread_id]
-        
-    def close_all(self):
-        """Закрыть все соединения"""
-        for conn in self.connections.values():
-            conn.close()
-
-db = Database()
+# Инициализация Flask и бота
+app = Flask(__name__)
+bot = telebot.TeleBot(TOKEN)
 
 # Инициализация базы данных
-def init_database():
-    """Инициализация таблиц в базе данных"""
-    conn = sqlite3.connect('bot_database.db', check_same_thread=False)
+def init_db():
+    conn = sqlite3.connect('bot_database.db')
     cursor = conn.cursor()
     
+    # Таблица пользователей
     cursor.execute('''
-    CREATE TABLE IF NOT EXISTS scammers (
-        user_id INTEGER PRIMARY KEY,
-        username TEXT,
-        scam_count INTEGER DEFAULT 1,
-        proofs TEXT,
-        added_by INTEGER,
-        added_date TEXT,
-        reason TEXT,
-        reporter_id INTEGER
-    )''')
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            role TEXT DEFAULT 'user',
+            search_count INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     
+    # Таблица скамеров
     cursor.execute('''
-    CREATE TABLE IF NOT EXISTS garants (
-        user_id INTEGER PRIMARY KEY,
-        username TEXT,
-        added_by INTEGER,
-        added_date TEXT,
-        info_link TEXT,
-        proofs_link TEXT,
-        proof_count INTEGER DEFAULT 0
-    )''')
+        CREATE TABLE IF NOT EXISTS scammers (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            reason TEXT,
+            proofs TEXT,
+            added_by INTEGER,
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     
+    # Таблица гарантов
     cursor.execute('''
-    CREATE TABLE IF NOT EXISTS search_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        username TEXT,
-        searcher_id INTEGER,
-        search_date TEXT
-    )''')
+        CREATE TABLE IF NOT EXISTS garanty (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            info_link TEXT,
+            proofs_link TEXT,
+            added_by INTEGER,
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     
+    # Таблица администраторов
     cursor.execute('''
-    CREATE TABLE IF NOT EXISTS chat_warnings (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        chat_id INTEGER,
-        warnings INTEGER DEFAULT 0,
-        last_warn_date TEXT
-    )''')
+        CREATE TABLE IF NOT EXISTS admins (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            added_by INTEGER,
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     
+    # Таблица варнов
     cursor.execute('''
-    CREATE TABLE IF NOT EXISTS chat_admins (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        chat_id INTEGER,
-        added_by INTEGER,
-        added_date TEXT,
-        added_scammers INTEGER DEFAULT 0,
-        UNIQUE(user_id, chat_id)
-    )''')
+        CREATE TABLE IF NOT EXISTS warns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            chat_id INTEGER,
+            reason TEXT,
+            warned_by INTEGER,
+            warned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS admin_stats (
-        admin_id INTEGER PRIMARY KEY,
-        added_scammers INTEGER DEFAULT 0,
-        added_garants INTEGER DEFAULT 0,
-        added_admins INTEGER DEFAULT 0,
-        last_action_date TEXT
-    )''')
+    # Добавляем администратора по умолчанию
+    cursor.execute('INSERT OR IGNORE INTO admins (user_id, username, added_by) VALUES (?, ?, ?)', 
+                  (ADMIN_ID, 'owner', ADMIN_ID))
     
     conn.commit()
     conn.close()
-    print("✅ База данных инициализирована")
 
-# File ID для фото (ОБНОВЛЕННЫЕ ID!)
-PHOTO_START = "AgACAgIAAxkBAAMDaVuXPAZ_gMcF_masVAbsYOKeHzcAAjYNaxsDaeBKo3RQYRT6stkBAAMCAAN5AAM4BA"
-PHOTO_REGULAR = "AgACAgIAAxkBAAMHaVuXyRaIsterNpb8m4S6OCNs4pAAAkkPaxt7wNlKFbDPVp3lyU0BAAMCAAN5AAM4BA"
-PHOTO_SCAMMER = "AgACAgIAAxkBAAMKaVuX0DTYvXOoh6L9-LQYZ6tXD4IAAkoPaxt7wNlKXE2XwnPDiyIBAAMCAAN5AAM4BA"
-PHOTO_GARANT = "AgACAgIAAxkBAAMNaVuX0Rv_6GJVFb8ulnhTb9UCxWUAAjwNaxsDaeBK8uKoaFgkFVEBAAMCAAN5AAM4BA"
-PHOTO_USER_PROFILE = "AgACAgIAAxkBAAMHaVuXyRaIsterNpb8m4S6OCNs4pAAAkkPaxt7wNlKFbDPVp3lyU0BAAMCAAN5AAM4BA"
-PHOTO_USER_SCAMMER = "AgACAgIAAxkBAAMKaVuX0DTYvXOoh6L9-LQYZ6tXD4IAAkoPaxt7wNlKXE2XwnPDiyIBAAMCAAN5AAM4BA"
-PHOTO_ADMIN = "AgACAgIAAxkBAAMQaVuX1K1bJLDWomL_T1ubUBQdnVYAAgcNaxsDaeBKrAABfnFPRUbCAQADAgADeQADOAQ"
+init_db()
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
-def get_welcome_inline_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 Новостной канал", url="https://t.me/AntiScamLaboratory")],
-        [InlineKeyboardButton("🕵️ Слить скамера", url="https://t.me/antiscambaseAS")]
-    ])
-
-def get_check_result_inline_keyboard(username):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚨 Слить скамера", url="https://t.me/antiscambaseAS")],
-        [InlineKeyboardButton("🔗 Вечная ссылка", callback_data=f"perma_link:{username}")
-        ]
-    ])
-
-def get_main_reply_keyboard(user_id=None, chat_type="private"):
-    if chat_type in ["group", "supergroup", "channel"]:
-        return None
-    elif chat_type == "private":
-        keyboard = [
-            ["👤 Мой профиль", "⭐ Список гарантов"],
-            ["🕵️ Слить скамера", "📋 Команды"],
-            ["ℹ️ Информация о боте"]
-        ]
-        if user_id == ADMIN_ID or is_chat_admin(user_id, 0):
-            keyboard.append(["🔐 Админ панель"])
-        return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
-    return None
-
-def get_admin_reply_keyboard():
-    keyboard = [
-        ["➕ Добавить гаранта", "➖ Удалить гаранта"],
-        ["➕ Добавить скамера", "➖ Удалить скамера"],
-        ["📊 Статистика", "⬅️ На главную"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
-
-# ========== ФУНКЦИИ ДЛЯ ПРОВЕРКИ ПРАВ ==========
-def is_global_admin(user_id):
-    """Проверка, является ли пользователь глобальным администратором"""
-    return user_id == ADMIN_ID
-
-def is_chat_admin(user_id, chat_id):
-    """Проверка, является ли пользователь администратором чата"""
-    try:
-        thread_id = threading.get_ident()
-        conn = db.get_connection(thread_id)
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM chat_admins WHERE user_id = ? AND chat_id = ?", (user_id, chat_id))
-        result = cursor.fetchone() is not None
-        return result
-    except Exception as e:
-        logger.error(f"Ошибка при проверке прав администратора чата: {e}")
-        return False
-
-def can_manage_chat(user_id, chat_id):
-    """Проверка, может ли пользователь управлять чатом"""
-    return is_global_admin(user_id) or is_chat_admin(user_id, chat_id)
-
-# ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ ПРЕДОТВРАЩЕНИЯ ДУБЛИРОВАНИЯ ==========
-last_message_time = {}
-MESSAGE_COOLDOWN = 1
-
-def check_message_cooldown(user_id):
-    current_time = time.time()
-    if user_id in last_message_time:
-        time_diff = current_time - last_message_time[user_id]
-        if time_diff < MESSAGE_COOLDOWN:
-            return False
-    last_message_time[user_id] = current_time
-    return True
-
-def update_admin_stats(admin_id, action):
-    """Обновление статистики администратора"""
-    try:
-        thread_id = threading.get_ident()
-        conn = db.get_connection(thread_id)
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            """INSERT INTO admin_stats (admin_id, added_scammers, added_garants, added_admins, last_action_date) 
-            VALUES (?, 0, 0, 0, ?)
-            ON CONFLICT(admin_id) DO UPDATE SET last_action_date = ?""",
-            (admin_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        )
-        
-        if action == "scammer":
-            cursor.execute("UPDATE admin_stats SET added_scammers = added_scammers + 1 WHERE admin_id = ?", (admin_id,))
-        elif action == "garant":
-            cursor.execute("UPDATE admin_stats SET added_garants = added_garants + 1 WHERE admin_id = ?", (admin_id,))
-        elif action == "admin":
-            cursor.execute("UPDATE admin_stats SET added_admins = added_admins + 1 WHERE admin_id = ?", (admin_id,))
-            
-        conn.commit()
-    except Exception as e:
-        logger.error(f"Ошибка при обновлении статистики админа: {e}")
-
-# ========== ОСНОВНЫЕ КОМАНДЫ ==========
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    chat_type = update.effective_chat.type
+# Функции работы с БД
+def get_user_role(user_id):
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
     
-    if not check_message_cooldown(user.id):
-        return
+    # Проверяем скамеров
+    cursor.execute('SELECT * FROM scammers WHERE user_id = ?', (user_id,))
+    if cursor.fetchone():
+        conn.close()
+        return 'scammer'
     
-    welcome_text = (
-        "🤩 Anti Scam - начинающий проект, который будет помогать людям не попадатся на скам и на сомнительные услуги.\n\n"
-        "⚠️В нашей предложке вы - можете слить скамера или же сообщить о подозрительной личности.\n\n"
-        "🔍Чат поиска гарантов| трейдов | просто общения - @AntiScamChata\n\n"
-        "🛡Наш бот для проверки на скам - @AntilScamBot.\n\n"
-        "✔️Если хотите нас поддержать, то ставьте в ник преписку 'As |  Ас'"
+    # Проверяем гарантов
+    cursor.execute('SELECT * FROM garanty WHERE user_id = ?', (user_id,))
+    if cursor.fetchone():
+        conn.close()
+        return 'garant'
+    
+    # Проверяем администраторов
+    cursor.execute('SELECT * FROM admins WHERE user_id = ?', (user_id,))
+    if cursor.fetchone():
+        conn.close()
+        return 'admin'
+    
+    conn.close()
+    return 'user'
+
+def increment_search_count(user_id, username):
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    
+    # Проверяем, есть ли пользователь
+    cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+    if cursor.fetchone():
+        cursor.execute('UPDATE users SET search_count = search_count + 1 WHERE user_id = ?', (user_id,))
+    else:
+        cursor.execute('INSERT INTO users (user_id, username, search_count) VALUES (?, ?, 1)', 
+                      (user_id, username))
+    
+    conn.commit()
+    conn.close()
+
+def get_search_count(user_id):
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT search_count FROM users WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else 0
+
+def get_scammers_count(admin_id):
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM scammers WHERE added_by = ?', (admin_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else 0
+
+def is_admin(user_id):
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM admins WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone() is not None
+    conn.close()
+    return result
+
+# Клавиатуры
+def create_main_keyboard():
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.add(KeyboardButton('Мой профиль'))
+    keyboard.add(KeyboardButton('Список гарантов'))
+    keyboard.add(KeyboardButton('Команды бота'))
+    return keyboard
+
+def create_inline_keyboard_profile(role, user_id):
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(
+        InlineKeyboardButton('Слить скамера', url='https://t.me/antiscambaseAS')
     )
     
+    # Вечная ссылка на профиль
+    if role != 'user':
+        keyboard.add(
+            InlineKeyboardButton('Вечная ссылка', url=f'tg://user?id={user_id}')
+        )
+    
+    return keyboard
+
+def create_inline_keyboard_check(user_id):
+    keyboard = InlineKeyboardMarkup()
+    keyboard.row(
+        InlineKeyboardButton('💍', callback_data=f'like_{user_id}'),
+        InlineKeyboardButton('💔', callback_data=f'dislike_{user_id}')
+    )
+    return keyboard
+
+# Обработчики команд
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    welcome_text = """
+Anti Scam - начинающий проект, который будет помогать людям не попадатся на скам и на сомнительные услуги.
+
+⚠️В нашей предложке вы - можете слить скамера или же сообщить о подозрительной личности.
+
+🔍Чат поиска гарантов| трейдов | просто общения - @AntiScamChata
+
+🛡Наш бот для проверки на скам - @AntilScamBot.
+
+✔️Если хотите нас поддержать, то ставьте в ник приписку 'As |  Ас'
+    """
+    
+    # Отправляем фото с приветствием
     try:
-        await update.message.reply_photo(
-            photo=PHOTO_START,
+        bot.send_photo(
+            message.chat.id,
+            'AgACAgIAAxkBAAMDaV5adx8Oy37acG9cGOEgHbYhv2wAAiMOaxuQvvlKqFGS2DnsF9YBAAMCAANzAAM4BA',
             caption=welcome_text,
-            reply_markup=get_welcome_inline_keyboard()
+            reply_markup=create_main_keyboard()
         )
-    except:
-        await update.message.reply_text(
-            welcome_text,
-            reply_markup=get_welcome_inline_keyboard()
+        
+        # Создаем инлайн кнопки под сообщением
+        keyboard = InlineKeyboardMarkup()
+        keyboard.row(
+            InlineKeyboardButton('Слить скамера', url='https://t.me/antiscambaseAS'),
+            InlineKeyboardButton('Новостной канал', url='https://t.me/AntiScamLaboratory')
         )
+        
+        bot.send_message(
+            message.chat.id,
+            'Выберите действие:',
+            reply_markup=keyboard
+        )
+    except Exception as e:
+        logger.error(f"Error sending welcome: {e}")
+        bot.send_message(message.chat.id, welcome_text, reply_markup=create_main_keyboard())
+
+@bot.message_handler(func=lambda message: message.text == 'Мой профиль')
+def my_profile(message):
+    user_id = message.from_user.id
+    username = message.from_user.username or 'Нет username'
+    role = get_user_role(user_id)
     
-    if chat_type == "private":
-        await update.message.reply_text(
-            "Используйте кнопки ниже для навигации:",
-            reply_markup=get_main_reply_keyboard(user.id, chat_type)
+    # Увеличиваем счетчик поисков
+    increment_search_count(user_id, username)
+    search_count = get_search_count(user_id)
+    
+    # Текущее время
+    current_time = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    
+    # Определяем фото и текст в зависимости от роли
+    if role == 'scammer':
+        photo_id = 'AgACAgIAAxkBAAMTaV5df-wUhpGbu_aqFH6_Smuu2zMAAkEOaxuQvvlKUCFRzR1AGyYBAAMCAAN5AAM4BA'
+        caption = f"""
+🕵️ᴜsᴇʀ: @{username}
+🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
+📍обнᴀᴩужᴇн ᴄᴋᴀʍᴇᴩ
+
+ʙᴄᴇ ᴨᴩуɸы нᴀ ᴄᴋᴀʍ ⬇️
+(пруфы на скам)
+
+ᴨоᴧьзоʙᴀᴛᴇᴧь ᴄ ᴨᴧохой ᴩᴇᴨуᴛᴀциᴇй❌
+дᴧя ʙᴀɯᴇй жᴇ бᴇзоᴨᴀᴄноᴄᴛи ᴧучɯᴇ зᴀбᴧоᴋиᴩоʙᴀᴛь ᴇᴦо✅
+
+🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {search_count}
+
+🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot
+
+🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи {current_time}
+
+оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!
+"""
+    
+    elif role == 'garant':
+        photo_id = 'AgACAgIAAxkBAAMZaV5d0ng4BuFtTjmwQbwAAYBsHktuAAJFDmsbkL75Ssa18PFEpyhEAQADAgADeQADOAQ'
+        # Получаем информацию о гаранте из БД
+        conn = sqlite3.connect('bot_database.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT info_link, proofs_link FROM garanty WHERE user_id = ?', (user_id,))
+        garant_info = cursor.fetchone()
+        conn.close()
+        
+        info_link = garant_info[0] if garant_info else "Не указано"
+        proofs_link = garant_info[1] if garant_info else "Не указано"
+        
+        caption = f"""
+🕵️ᴜsᴇʀ: @{username}
+🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
+💯яʙᴧяᴇᴛᴄя ᴦᴀᴩᴀнᴛоʍ бᴀзы
+
+ᴇᴦо [ᴇᴇ] инɸо: {info_link}
+ᴇᴦо [ᴇᴇ] ᴨᴩуɸы: {proofs_link}
+
+🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {search_count}
+
+🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot
+
+🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи {current_time}
+
+оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!
+"""
+    
+    elif role == 'admin':
+        photo_id = 'AgACAgIAAxkBAAMVaV5dle8QkMo02yTdfGKefimIAAEDAAJEDmsbkL75StvZ04a4hKQJAQADAgADeQADOAQ'
+        scammers_added = get_scammers_count(user_id)
+        
+        caption = f"""
+🕵️ᴜsᴇʀ: @{username}
+🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
+💯яʙᴧяᴇᴛᴄя администратором бᴀзы
+
+Добавленно скамеров - {scammers_added}
+
+🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {search_count}
+🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot
+
+🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи {current_time}
+
+оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!
+"""
+    
+    else:  # обычный пользователь
+        photo_id = 'AgACAgIAAxkBAAMbaV5d5EjzLoxlESB0a3aRaO9ENrAAAkgOaxuQvvlKzGwdJxbnZlsBAAMCAAN5AAM4BA'
+        caption = f"""
+🕵️ᴜsᴇʀ: @{username}
+🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...
+✅ обычный ᴨоᴧьзоʙᴀᴛᴇᴧь ✅
+
+🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {search_count}
+ 
+🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot
+
+🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи {current_time}
+
+оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!
+"""
+    
+    try:
+        bot.send_photo(
+            message.chat.id,
+            photo_id,
+            caption=caption,
+            reply_markup=create_inline_keyboard_profile(role, user_id)
+        )
+    except Exception as e:
+        logger.error(f"Error sending profile: {e}")
+        bot.send_message(message.chat.id, caption, reply_markup=create_inline_keyboard_profile(role, user_id))
+
+@bot.message_handler(func=lambda message: message.text == 'Список гарантов')
+def list_garants(message):
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT username, proofs_link FROM garanty')
+    garants = cursor.fetchall()
+    conn.close()
+    
+    if not garants:
+        bot.send_message(message.chat.id, "Список гарантов пуст.")
+        return
+    
+    response = "📋 Список гарантов:\n\n"
+    for i, (username, proofs_link) in enumerate(garants, 1):
+        response += f"{i}. @{username}\n"
+        response += f"   Пруфы: {proofs_link}\n\n"
+    
+    bot.send_message(message.chat.id, response)
+
+@bot.message_handler(func=lambda message: message.text == 'Команды бота')
+def bot_commands(message):
+    commands_text = """
+🤖 Доступные команды бота:
+
+🔍 Проверка пользователей:
+/check @username - Проверить пользователя
+/check (в ответ на сообщение) - Проверить пользователя
+/check me - Проверить себя
+
+⚠️ Обратите внимание: 
+Команды для администрации не отображаются в публичном списке.
+Администраторы имеют специальные права через панель управления.
+    """
+    
+    bot.send_message(message.chat.id, commands_text)
+
+# Команда проверки пользователя
+@bot.message_handler(commands=['check'])
+def check_user(message):
+    args = message.text.split()
+    
+    if len(args) == 1 and not message.reply_to_message:
+        bot.send_message(message.chat.id, "Использование:\n/check @username\n/check me\nИли ответьте на сообщение с /check")
+        return
+    
+    user_to_check = None
+    
+    if len(args) == 2 and args[1].lower() == 'me':
+        user_to_check = message.from_user
+    
+    elif len(args) == 2 and args[1].startswith('@'):
+        username = args[1][1:]
+        # Здесь должна быть логика получения пользователя по username
+        # Для примера используем текущего пользователя
+        user_to_check = message.from_user
+    
+    elif message.reply_to_message:
+        user_to_check = message.reply_to_message.from_user
+    
+    if user_to_check:
+        user_id = user_to_check.id
+        username = user_to_check.username or 'Нет username'
+        role = get_user_role(user_id)
+        
+        # Увеличиваем счетчик поисков
+        increment_search_count(user_id, username)
+        search_count = get_search_count(user_id)
+        
+        current_time = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        
+        # Создаем текст результата проверки
+        if role == 'scammer':
+            result_text = f"""
+📍 Результат проверки:
+
+Пользователь: @{username}
+ID: {user_id}
+Статус: ⚠️ СКАМЕР ⚠️
+
+🔍 Проверок: {search_count}
+⏰ Время проверки: {current_time}
+
+Рекомендуется избегать взаимодействия с данным пользователем!
+"""
+        elif role == 'garant':
+            result_text = f"""
+📍 Результат проверки:
+
+Пользователь: @{username}
+ID: {user_id}
+Статус: ✅ ГАРАНТ ✅
+
+🔍 Проверок: {search_count}
+⏰ Время проверки: {current_time}
+
+Данный пользователь имеет статус гаранта.
+"""
+        elif role == 'admin':
+            result_text = f"""
+📍 Результат проверки:
+
+Пользователь: @{username}
+ID: {user_id}
+Статус: 👑 АДМИНИСТРАТОР 👑
+
+🔍 Проверок: {search_count}
+⏰ Время проверки: {current_time}
+
+Данный пользователь является администратором базы.
+"""
+        else:
+            result_text = f"""
+📍 Результат проверки:
+
+Пользователь: @{username}
+ID: {user_id}
+Статус: 👤 ОБЫЧНЫЙ ПОЛЬЗОВАТЕЛЬ 👤
+
+🔍 Проверок: {search_count}
+⏰ Время проверки: {current_time}
+
+Нарушений не обнаружено.
+"""
+        
+        bot.send_message(
+            message.chat.id,
+            result_text,
+            reply_markup=create_inline_keyboard_check(user_id)
         )
 
-async def check_user(user_id, username, searcher_id):
-    """Проверка пользователя в базе"""
+# Команды для администрации (только для админов)
+@bot.message_handler(commands=['add_scammer'])
+def add_scammer(message):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "❌ У вас нет прав для выполнения этой команды.")
+        return
+    
+    args = message.text.split(maxsplit=3)
+    if len(args) < 4:
+        bot.send_message(message.chat.id, "Использование: /add_scammer @username причина пруфы")
+        return
+    
+    username = args[1][1:] if args[1].startswith('@') else args[1]
+    reason = args[2]
+    proofs = args[3] if len(args) > 3 else "Не указаны"
+    
+    # Получаем ID пользователя по username (упрощенная версия)
+    # В реальном боте нужно использовать API Telegram для получения ID
+    user_id = hash(username) % 1000000  # Временное решение
+    
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    
     try:
-        thread_id = threading.get_ident()
-        conn = db.get_connection(thread_id)
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            "INSERT INTO search_history (user_id, username, searcher_id, search_date) VALUES (?, ?, ?, ?)",
-            (user_id, username, searcher_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        )
-        
-        cursor.execute("SELECT COUNT(*) FROM search_history WHERE user_id = ?", (user_id,))
-        search_count = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT scam_count, proofs, reason FROM scammers WHERE user_id = ?", (user_id,))
-        scammer = cursor.fetchone()
-        
-        cursor.execute("SELECT info_link, proofs_link, proof_count FROM garants WHERE user_id = ?", (user_id,))
-        garant = cursor.fetchone()
-        
-        # Проверяем, является ли администратором
-        cursor.execute("SELECT COUNT(*) FROM chat_admins WHERE user_id = ?", (user_id,))
-        is_chat_admin_result = cursor.fetchone()[0] > 0
-        
-        is_global_admin_result = user_id == ADMIN_ID
-        
-        added_scammers = 0
-        if is_global_admin_result or is_chat_admin_result:
-            cursor.execute("SELECT SUM(added_scammers) FROM chat_admins WHERE user_id = ?", (user_id,))
-            result = cursor.fetchone()
-            added_scammers = result[0] if result and result[0] else 0
+        cursor.execute('''
+            INSERT OR REPLACE INTO scammers (user_id, username, reason, proofs, added_by)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (user_id, username, reason, proofs, message.from_user.id))
         
         conn.commit()
-        
-        if scammer:
-            scam_count, proofs, reason = scammer
-            return {
-                "type": "scammer", 
-                "scam_count": scam_count, 
-                "proofs": proofs, 
-                "reason": reason, 
-                "search_count": search_count,
-                "username": username
-            }
-        elif garant:
-            info_link, proofs_link, proof_count = garant
-            return {
-                "type": "garant", 
-                "search_count": search_count, 
-                "info_link": info_link, 
-                "proofs_link": proofs_link, 
-                "proof_count": proof_count,
-                "username": username
-            }
-        elif is_global_admin_result:
-            return {
-                "type": "admin", 
-                "search_count": search_count, 
-                "added_scammers": added_scammers,
-                "admin_type": "global",
-                "username": username
-            }
-        elif is_chat_admin_result:
-            return {
-                "type": "admin", 
-                "search_count": search_count, 
-                "added_scammers": added_scammers,
-                "admin_type": "chat",
-                "username": username
-            }
-        else:
-            return {
-                "type": "regular", 
-                "search_count": search_count,
-                "username": username
-            }
+        bot.send_message(message.chat.id, f"✅ Скамер @{username} добавлен в базу.")
     except Exception as e:
-        logger.error(f"Ошибка при проверке пользователя: {e}")
-        return {"type": "regular", "search_count": 0, "username": username}
-
-async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not check_message_cooldown(update.effective_user.id):
-        return
-    
-    if context.args:
-        username = context.args[0].replace('@', '')
-        user_id = hash(username) % 10000000000  # Более уникальный ID
-    elif update.message.reply_to_message:
-        target_user = update.message.reply_to_message.from_user
-        username = target_user.username or f"id{target_user.id}"
-        user_id = target_user.id
-    else:
-        await update.message.reply_text("Использование: /check @username")
-        return
-    
-    result = await check_user(user_id, username, update.effective_user.id)
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Используем username из результата, а не из запроса
-    display_username = result.get('username', username)
-    
-    if result["type"] == "regular":
-        response = (
-            f"🕵️ᴜsᴇʀ: @{display_username}\n"
-            f"🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...\n"
-            f"✅ обычный ᴨоᴧьзоʙᴀᴛᴇᴧь ✅\n\n"
-            f"🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {result['search_count']} раз\n\n"
-            f"🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot\n\n"
-            f"🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи [{current_time}]\n\n"
-            f"оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!"
-        )
-        
-        try:
-            await update.message.reply_photo(
-                photo=PHOTO_REGULAR,
-                caption=response,
-                reply_markup=get_check_result_inline_keyboard(display_username)
-            )
-        except:
-            await update.message.reply_text(
-                response,
-                reply_markup=get_check_result_inline_keyboard(display_username)
-            )
-    
-    elif result["type"] == "scammer":
-        reason_text = f"Причина: {result['reason']}\n" if result.get('reason') else ""
-        response = (
-            f"🕵️ᴜsᴇʀ: @{display_username}\n"
-            f"🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...\n"
-            f"📍обнᴀᴩужᴇн ᴄᴋᴀʍᴇᴩ\n\n"
-            f"ʙᴄᴇ ᴨᴩуɸы нᴀ ᴄᴋᴀʍ ⬇️\n"
-            f"{reason_text}"
-            f"{result['proofs'] or '(ᴄᴄыᴧᴋᴀ нᴀ ᴨᴩуɸы и ᴨᴩичинᴀ)'}\n\n"
-            f"ᴨоᴧьзоʙᴀᴛᴇᴧь ᴄ ᴨᴧохой ᴩᴇᴨуᴛᴀциᴇй❌\n"
-            f"дᴧя ʙᴀɯᴇй жᴇ бᴇзоᴨᴀᴄноᴄᴛи ᴧучɯᴇ зᴀбᴧоᴋиᴩоʙᴀᴛь ᴇᴦо✅\n\n"
-            f"🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {result['search_count']} раз\n\n"
-            f"🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot\n\n"
-            f"🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи [{current_time}]\n\n"
-            f"оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!"
-        )
-        
-        try:
-            await update.message.reply_photo(
-                photo=PHOTO_SCAMMER,
-                caption=response,
-                reply_markup=get_check_result_inline_keyboard(display_username)
-            )
-        except:
-            await update.message.reply_text(
-                response,
-                reply_markup=get_check_result_inline_keyboard(display_username)
-            )
-    
-    elif result["type"] == "admin":
-        admin_type_text = "глобальным администратором" if result.get('admin_type') == 'global' else "администратором чата"
-        response = (
-            f"🕵️ᴜsᴇʀ: @{display_username}\n"
-            f"🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...\n"
-            f"💯яʙᴧяᴇᴛᴄя {admin_type_text} бᴀзы\n\n"
-            f"Добавлено скамеров - {result.get('added_scammers', 0)} чел.\n\n"
-            f"🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {result['search_count']} раз\n\n"
-            f"🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot\n\n"
-            f"🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи [{current_time}]\n\n"
-            f"оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!"
-        )
-        
-        try:
-            await update.message.reply_photo(
-                photo=PHOTO_ADMIN,
-                caption=response,
-                reply_markup=get_check_result_inline_keyboard(display_username)
-            )
-        except:
-            await update.message.reply_text(
-                response,
-                reply_markup=get_check_result_inline_keyboard(display_username)
-            )
-    
-    else:  # garant
-        info_link = result.get('info_link', '(ᴄᴄыᴧᴋᴀ нᴀ инɸо)')
-        proofs_link = result.get('proofs_link', '(ᴄᴄыᴧᴋᴀ нᴀ ᴨᴩуɸы)')
-        proof_count = result.get('proof_count', 0)
-        
-        response = (
-            f"🕵️ᴜsᴇʀ: @{display_username}\n"
-            f"🔎ищᴇʍ ʙ бᴀзᴇ дᴀнных...\n"
-            f"💯яʙᴧяᴇᴛᴄя ᴦᴀᴩᴀнᴛоʍ бᴀзы\n\n"
-            f"ᴇᴦо [ᴇᴇ] инɸо: {info_link}\n"
-            f"ᴇᴦо [ᴇᴇ] ᴨᴩуɸы: {proofs_link}\n\n"
-            f"🔎ᴨоᴧьзоʙᴀᴛᴇᴧя иᴄᴋᴀᴧи: {result['search_count']} раз\n\n"
-            f"🔝ᴨᴩоʙᴇᴩᴇнно @AntilScam_bot\n\n"
-            f"🗓️дᴀᴛᴀ и ʙᴩᴇʍя ᴨᴩоʙᴇᴩᴋи [{current_time}]\n\n"
-            f"оᴛ ᴀдʍиниᴄᴛᴩᴀции: жᴇᴧᴀю ʙᴀʍ нᴇ ʙᴇᴄᴛиᴄь нᴀ ᴄᴋᴀʍ!"
-        )
-        
-        try:
-            await update.message.reply_photo(
-                photo=PHOTO_GARANT,
-                caption=response,
-                reply_markup=get_check_result_inline_keyboard(display_username)
-            )
-        except:
-            await update.message.reply_text(
-                response,
-                reply_markup=get_check_result_inline_keyboard(display_username)
-            )
-
-async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /me и обработчик кнопки 'Мой профиль' с фото"""
-    if not check_message_cooldown(update.effective_user.id):
-        return
-    
-    user = update.effective_user
-    result = await check_user(user.id, user.username or f"id{user.id}", user.id)
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Используем username из результата
-    display_username = result.get('username', user.username or f"id{user.id}")
-    
-    # Определяем роль пользователя
-    if result["type"] == "scammer":
-        profile_photo = PHOTO_USER_SCAMMER
-        status_text = f"СКАМЕР ⚠️\nКоличество скамов: {result['scam_count']}\nПричина: {result.get('reason', 'Не указана')}"
-        status_emoji = "⚠️"
-    elif result["type"] == "garant":
-        profile_photo = PHOTO_GARANT
-        status_text = f"ГАРАНТ ✅\nПруфов: {result.get('proof_count', 0)}"
-        status_emoji = "✅"
-    elif result["type"] == "admin":
-        admin_type_text = "глобальным администратором" if result.get('admin_type') == 'global' else "администратором чата"
-        profile_photo = PHOTO_ADMIN
-        status_text = f"{admin_type_text.upper()} 👑\nДобавлено скамеров: {result.get('added_scammers', 0)}"
-        status_emoji = "👑"
-    else:
-        profile_photo = PHOTO_USER_PROFILE
-        status_text = "ОБЫЧНЫЙ ПОЛЬЗОВАТЕЛЬ"
-        status_emoji = "👤"
-    
-    user_info = (
-        f"{status_emoji} Ваш профиль:\n\n"
-        f"🆔 ID: {user.id}\n"
-        f"📛 Имя: {user.first_name}\n"
-        f"📧 Username: @{display_username}\n"
-        f"🔍 Статус: {status_text}\n\n"
-        f"👁‍🗨 Вас искали: {result['search_count']} раз\n"
-        f"🗓️ Дата проверки: {current_time}\n\n"
-        f"🤖 Бот: @AntilScamBot"
-    )
-    
-    try:
-        await update.message.reply_photo(
-            photo=profile_photo,
-            caption=user_info,
-            reply_markup=get_main_reply_keyboard(user.id, update.effective_chat.type)
-        )
-    except:
-        await update.message.reply_text(
-            user_info, 
-            reply_markup=get_main_reply_keyboard(user.id, update.effective_chat.type)
-        )
-
-# ========== УЛУЧШЕННЫЕ АДМИН КОМАНДЫ ==========
-async def add_scammer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not check_message_cooldown(update.effective_user.id):
-        return
-    
-    user = update.effective_user
-    chat = update.effective_chat
-    
-    # Проверяем права
-    if not can_manage_chat(user.id, chat.id):
-        await update.message.reply_text("❌ У вас нет прав для добавления скамеров!")
-        return
-    
-    if len(context.args) < 2:
-        await update.message.reply_text("Использование: /add_scammer @username причина_заноса\nПример: /add_scammer @username Скам 1000 руб")
-        return
-    
-    username = context.args[0].replace('@', '')
-    reason = context.args[1]
-    proofs = ' '.join(context.args[2:]) if len(context.args) > 2 else ""
-    
-    try:
-        thread_id = threading.get_ident()
-        conn = db.get_connection(thread_id)
-        cursor = conn.cursor()
-        
-        user_id = hash(username) % 10000000000  # Более уникальный ID
-        
-        cursor.execute(
-            """INSERT INTO scammers (user_id, username, scam_count, proofs, added_by, added_date, reason, reporter_id) 
-            VALUES (?, ?, 1, ?, ?, ?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET 
-            scam_count = scam_count + 1,
-            proofs = COALESCE(proofs, '') || '\n' || excluded.proofs,
-            reason = excluded.reason""",
-            (user_id, username, proofs, user.id, 
-             datetime.now().strftime("%Y-%m-%d %H:%M:%S"), reason, user.id)
-        )
-        
-        # Обновляем статистику администратора
-        update_admin_stats(user.id, "scammer")
-        
-        # Обновляем статистику в chat_admins если это админ чата
-        cursor.execute(
-            "UPDATE chat_admins SET added_scammers = added_scammers + 1 WHERE user_id = ?",
-            (user.id,)
-        )
-        
-        conn.commit()
-        
-        response = (
-            f"✅ @{username} добавлен в скамеры!\n\n"
-            f"📝 Причина: {reason}\n"
-            f"📎 Доказательства: {proofs or 'Не указаны'}\n\n"
-            f"👤 Добавил: {user.first_name}\n"
-            f"🕐 Время: {datetime.now().strftime('%H:%M:%S')}"
-        )
-        
-        await update.message.reply_text(response)
-        
-    except sqlite3.OperationalError as e:
-        if "database is locked" in str(e):
-            logger.error(f"Ошибка блокировки базы данных: {e}")
-            await update.message.reply_text("⚠️ База данных занята. Попробуйте через несколько секунд.")
-        else:
-            logger.error(f"Ошибка SQLite в add_scammer_command: {e}")
-            await update.message.reply_text("❌ Произошла ошибка при добавлении скамера!")
-    except Exception as e:
-        logger.error(f"Ошибка в add_scammer_command: {e}")
-        await update.message.reply_text("❌ Произошла ошибка при добавлении скамера!")
-
-async def del_scammer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not check_message_cooldown(update.effective_user.id):
-        return
-    
-    user = update.effective_user
-    
-    # Проверяем права
-    if not is_global_admin(user.id):
-        await update.message.reply_text("❌ Только глобальный администратор может удалять скамеров!")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("Использование: /del_scammer @username")
-        return
-    
-    username = context.args[0].replace('@', '')
-    
-    try:
-        thread_id = threading.get_ident()
-        conn = db.get_connection(thread_id)
-        cursor = conn.cursor()
-        
-        cursor.execute("DELETE FROM scammers WHERE username = ?", (username,))
-        conn.commit()
-        
-        if cursor.rowcount > 0:
-            await update.message.reply_text(f"✅ @{username} удален из скамеров")
-        else:
-            await update.message.reply_text(f"❌ @{username} не найден")
-    except Exception as e:
-        logger.error(f"Ошибка в del_scammer_command: {e}")
-        await update.message.reply_text("❌ Произошла ошибка при удалении скамера!")
-
-async def add_garant_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not check_message_cooldown(update.effective_user.id):
-        return
-    
-    user = update.effective_user
-    
-    if not is_global_admin(user.id):
-        await update.message.reply_text("❌ Только глобальный администратор может добавлять гарантов!")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("Использование: /add_garant @username [info_link] [proofs_link] [proof_count]\nПример: /add_garant @user https://t.me/info https://t.me/proofs 5")
-        return
-    
-    username = context.args[0].replace('@', '')
-    info_link = context.args[1] if len(context.args) > 1 else "https://t.me/AntiScamLaboratory"
-    proofs_link = context.args[2] if len(context.args) > 2 else "https://t.me/AntiScamLaboratory"
-    proof_count = int(context.args[3]) if len(context.args) > 3 and context.args[3].isdigit() else 0
-    
-    try:
-        thread_id = threading.get_ident()
-        conn = db.get_connection(thread_id)
-        cursor = conn.cursor()
-        
-        user_id = hash(username) % 10000000000  # Более уникальный ID
-        
-        cursor.execute(
-            "INSERT OR REPLACE INTO garants (user_id, username, added_by, added_date, info_link, proofs_link, proof_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (user_id, username, user.id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), info_link, proofs_link, proof_count)
-        )
-        
-        # Обновляем статистику администратора
-        update_admin_stats(user.id, "garant")
-        
-        conn.commit()
-        
-        response = (
-            f"✅ @{username} добавлен в гаранты!\n\n"
-            f"📊 Информация: {info_link}\n"
-            f"📎 Пруфы: {proofs_link}\n"
-            f"🔢 Количество пруфов: {proof_count}\n\n"
-            f"👤 Добавил: {user.first_name}\n"
-            f"🕐 Время: {datetime.now().strftime('%H:%M:%S')}"
-        )
-        
-        await update.message.reply_text(response)
-    except Exception as e:
-        logger.error(f"Ошибка в add_garant_command: {e}")
-        await update.message.reply_text("❌ Произошла ошибка при добавлении гаранта!")
-
-async def del_garant_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not check_message_cooldown(update.effective_user.id):
-        return
-    
-    user = update.effective_user
-    
-    if not is_global_admin(user.id):
-        await update.message.reply_text("❌ Только глобальный администратор может удалять гарантов!")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("Использование: /del_garant @username")
-        return
-    
-    username = context.args[0].replace('@', '')
-    
-    try:
-        thread_id = threading.get_ident()
-        conn = db.get_connection(thread_id)
-        cursor = conn.cursor()
-        
-        cursor.execute("DELETE FROM garants WHERE username = ?", (username,))
-        conn.commit()
-        
-        if cursor.rowcount > 0:
-            await update.message.reply_text(f"✅ @{username} удален из гарантов")
-        else:
-            await update.message.reply_text(f"❌ @{username} не найден")
-    except Exception as e:
-        logger.error(f"Ошибка в del_garant_command: {e}")
-        await update.message.reply_text("❌ Произошла ошибка при удалении гаранта!")
-
-async def list_garants_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not check_message_cooldown(update.effective_user.id):
-        return
-    
-    try:
-        thread_id = threading.get_ident()
-        conn = db.get_connection(thread_id)
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT username, proof_count, proofs_link FROM garants ORDER BY username")
-        garants = cursor.fetchall()
-        
-        if garants:
-            response = "⭐ ГАРАНТЫ БАЗЫ:\n\n"
-            for garant in garants:
-                username, proof_count, proofs_link = garant
-                response += f"👤 @{username}\n📊 Пруфов: {proof_count}\n🔗 Канал: {proofs_link}\n\n"
-            response += f"📊 Всего гарантов: {len(garants)}"
-        else:
-            response = "📭 Список гарантов пуст"
-        
-        await update.message.reply_text(response)
-    except Exception as e:
-        logger.error(f"Ошибка в list_garants_command: {e}")
-        await update.message.reply_text("❌ Произошла ошибка при получении списка гарантов!")
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not check_message_cooldown(update.effective_user.id):
-        return
-    
-    chat_type = update.effective_chat.type
-    user = update.effective_user
-    
-    help_text = (
-        "🤖 Anti-Scam Bot - Справка\n\n"
-        "📌 Основные команды:\n"
-        "/start - Начать работу с ботом\n"
-        "/check @username - Проверить пользователя\n"
-        "/check (в ответ на сообщение) - Проверить отправителя\n"
-        "/me - Показать мой профиль\n"
-        "/garants - Список гарантов\n\n"
-    )
-    
-    if can_manage_chat(user.id, update.effective_chat.id):
-        help_text += (
-            "👑 Команды для администраторов:\n"
-            "/add_scammer @username причина - Добавить скамера\n"
-            "/del_scammer @username - Удалить скамера\n"
-            "/add_admin @username - Добавить администратора\n"
-            "/del_admin @username - Удалить администратора\n"
-            "/list_admins - Список администраторов\n"
-            "/warn @username - Выдать предупреждение\n"
-            "/mute @username - Заглушить\n"
-            "/open - Открыть чат\n"
-            "/close - Закрыть чат\n\n"
-        )
-    
-    if is_global_admin(user.id):
-        help_text += (
-            "🕵️‍♂️ Глобальные админ команды:\n"
-            "/add_garant @username - Добавить гаранта\n"
-            "/del_garant @username - Удалить гаранта\n"
-            "/stats - Полная статистика\n"
-            "/broadcast - Рассылка сообщения\n\n"
-        )
-    
-    help_text += (
-        "📊 Статус бота: /status\n"
-        "🛠 Разработчик: @SAGYN_OFFICIAL"
-    )
-    
-    await update.message.reply_text(
-        help_text,
-        reply_markup=get_main_reply_keyboard(update.effective_user.id, update.effective_chat.type)
-    )
-
-# ========== КОМАНДЫ ДЛЯ ЧАТОВ ==========
-async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not check_message_cooldown(update.effective_user.id):
-        return
-    
-    chat = update.effective_chat
-    user = update.effective_user
-    
-    if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("Эта команда работает только в группах!")
-        return
-    
-    if not can_manage_chat(user.id, chat.id):
-        await update.message.reply_text("❌ У вас нет прав для добавления администраторов!")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("Использование: /add_admin @username\nПример: /add_admin @user123")
-        return
-    
-    target = context.args[0].replace('@', '')
-    user_id = hash(target) % 10000000000
-    
-    if is_chat_admin(user_id, chat.id):
-        await update.message.reply_text(f"❌ @{target} уже является администратором этого чата!")
-        return
-    
-    try:
-        thread_id = threading.get_ident()
-        conn = db.get_connection(thread_id)
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            "INSERT INTO chat_admins (user_id, chat_id, added_by, added_date) VALUES (?, ?, ?, ?)",
-            (user_id, chat.id, user.id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        )
-        
-        # Обновляем статистики администратора
-        update_admin_stats(user.id, "admin")
-        
-        conn.commit()
-        
-        response = (
-            f"✅ @{target} добавлен как администратор чата!\n\n"
-            f"📛 Чат: {chat.title}\n"
-            f"👤 Добавил: {user.first_name}\n"
-            f"🕐 Время: {datetime.now().strftime('%H:%M:%S')}\n\n"
-            f"🛡️ Теперь этот пользователь может:\n"
-            f"• Добавлять скамеров (/add_scammer)\n"
-            f"• Управлять чатом (/close, /open)\n"
-            f"• Выдавать предупреждения (/warn)\n"
-            f"• Заглушать пользователей (/mute)"
-        )
-        
-        await update.message.reply_text(response)
-        
-    except sqlite3.IntegrityError:
-        await update.message.reply_text(f"❌ @{target} уже является администратором!")
-    except Exception as e:
-        logger.error(f"Ошибка в add_admin_command: {e}")
-        await update.message.reply_text("❌ Произошла ошибка при добавлении администратора!")
-
-async def del_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not check_message_cooldown(update.effective_user.id):
-        return
-    
-    chat = update.effective_chat
-    user = update.effective_user
-    
-    if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("Эта команда работает только в группах!")
-        return
-    
-    if not can_manage_chat(user.id, chat.id):
-        await update.message.reply_text("❌ У вас нет прав для удаления администраторов!")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("Использование: /del_admin @username\nПример: /del_admin @user123")
-        return
-    
-    target = context.args[0].replace('@', '')
-    user_id = hash(target) % 10000000000
-    
-    if not is_chat_admin(user_id, chat.id):
-        await update.message.reply_text(f"❌ @{target} не является администратором этого чата!")
-        return
-    
-    try:
-        thread_id = threading.get_ident()
-        conn = db.get_connection(thread_id)
-        cursor = conn.cursor()
-        
-        cursor.execute("DELETE FROM chat_admins WHERE user_id = ? AND chat_id = ?", (user_id, chat.id))
-        conn.commit()
-        
-        if cursor.rowcount > 0:
-            await update.message.reply_text(f"✅ @{target} удален из администраторов чата!")
-        else:
-            await update.message.reply_text(f"❌ Не удалось удалить @{target}!")
-    except Exception as e:
-        logger.error(f"Ошибка в del_admin_command: {e}")
-        await update.message.reply_text("❌ Произошла ошибка при удалении администратора!")
-
-async def list_admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not check_message_cooldown(update.effective_user.id):
-        return
-    
-    chat = update.effective_chat
-    
-    if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("Эта команда работает только в группах!")
-        return
-    
-    try:
-        thread_id = threading.get_ident()
-        conn = db.get_connection(thread_id)
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            "SELECT user_id, added_by, added_date, added_scammers FROM chat_admins WHERE chat_id = ? ORDER BY added_date",
-            (chat.id,)
-        )
-        chat_admins = cursor.fetchall()
-        
-        global_admin_info = f"👑 Глобальный администратор: ID {ADMIN_ID}\n"
-        
-        if chat_admins:
-            admins_list = []
-            for admin in chat_admins:
-                user_id, added_by, added_date, added_scammers = admin
-                admins_list.append(f"• ID: {user_id} (добавил {added_scammers} скамеров, добавлен {added_date[:10]})")
-            
-            response = (
-                f"📋 Администраторы чата: {chat.title}\n\n"
-                f"{global_admin_info}\n"
-                f"👥 Администраторы чата ({len(chat_admins)}):\n"
-                + "\n".join(admins_list) +
-                f"\n\n📊 Всего администраторов: {len(chat_admins) + 1}"
-            )
-        else:
-            response = (
-                f"📋 Администраторы чата: {chat.title}\n\n"
-                f"{global_admin_info}\n"
-                f"👥 Администраторы чата: Нет\n\n"
-                f"📊 Всего администраторов: 1 (только глобальный)"
-            )
-        
-        await update.message.reply_text(response)
-        
-    except Exception as e:
-        logger.error(f"Ошибка в list_admins_command: {e}")
-        await update.message.reply_text("❌ Произошла ошибка при получении списка администраторов!")
-
-# ========== ДРУГИЕ КОМАНДЫ ==========
-async def bot_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not check_message_cooldown(update.effective_user.id):
-        return
-    
-    status_text = (
-        "🤖 Статус Anti-Scam Bot:\n\n"
-        f"📊 Статус: ✅ Онлайн\n"
-        f"⏱ Запущен: {bot_status['started_at'][:19]}\n"
-        f"🔄 Uptime: {str(datetime.now() - datetime.fromisoformat(bot_status['started_at']))}\n"
-        f"📡 Последний пинг: {bot_status['last_ping'][:19]}\n"
-        f"🌐 Запросов к API: {bot_status['total_requests']}\n\n"
-        f"⚡ Бот работает нормально"
-    )
-    await update.message.reply_text(status_text)
-
-async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Рассылка сообщения всем пользователям"""
-    if not check_message_cooldown(update.effective_user.id):
-        return
-    
-    user = update.effective_user
-    
-    if not is_global_admin(user.id):
-        await update.message.reply_text("❌ Только глобальный администратор может делать рассылку!")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("Использование: /broadcast текст_сообщения")
-        return
-    
-    message = ' '.join(context.args)
-    
-    await update.message.reply_text(f"📢 Рассылка подготовлена!\n\nСообщение: {message}\n\n⚠️ В текущей версии рассылка не реализована.")
-
-# ========== ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ ==========
-async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        if not check_message_cooldown(update.effective_user.id):
-            return
-        
-        text = update.message.text
-        user = update.effective_user
-        chat_type = update.effective_chat.type
-        
-        if chat_type != "private":
-            return
-        
-        logger.info(f"Получено текстовое сообщение: '{text}' от пользователя {user.id}")
-        
-        if text == "👤 Мой профиль":
-            logger.info(f"Пользователь {user.id} нажал 'Мой профиль'")
-            await me_command(update, context)
-        elif text == "⭐ Список гарантов":
-            await list_garants_command(update, context)
-        elif text == "🕵️ Слить скамера":
-            await update.message.reply_text(
-                "Для слива скамера перейдите по ссылке:\nhttps://t.me/antiscambaseAS",
-                reply_markup=get_main_reply_keyboard(user.id, chat_type)
-            )
-        elif text == "📋 Команды":
-            await help_command(update, context)
-        elif text == "ℹ️ Информация о боте":
-            info_text = (
-                "🤖 Anti Scam Bot v6.0\n\n"
-                "🔍 Бот для проверки пользователей на скам\n\n"
-                "📊 НОВЫЕ ВОЗМОЖНОСТИ:\n"
-                "• Показ роли в профиле (скамер/гарант/админ/обычный)\n"
-                "• Фото профиля для каждой роли\n"
-                "• Система статистики администраторов\n"
-                "• Причины добавления скамеров\n"
-                "• Счетчик пруфов у гарантов\n\n"
-                "👑 РОЛИ ПОЛЬЗОВАТЕЛЕЙ:\n"
-                "• Скамер - красное фото, причина скама\n"
-                "• Гарант - синее фото, количество пруфов\n"
-                "• Администратор - золотое фото, статистика\n"
-                "• Обычный пользователь - зеленое фото\n\n"
-                "🛠 Разработчик: @SAGYN_OFFICIAL\n"
-                "📅 Версия: 6.0 (полное управление ролями)"
-            )
-            await update.message.reply_text(info_text, reply_markup=get_main_reply_keyboard(user.id, chat_type))
-        elif text == "🔐 Админ панель" and can_manage_chat(user.id, 0):
-            await update.message.reply_text("👑 Админ панель", reply_markup=get_admin_reply_keyboard())
-        elif text == "➕ Добавить гаранта" and is_global_admin(user.id):
-            await update.message.reply_text("Используйте команду: /add_garant @username [info_link] [proofs_link] [proof_count]")
-        elif text == "➖ Удалить гаранта" and is_global_admin(user.id):
-            await update.message.reply_text("Используйте команду: /del_garant @username")
-        elif text == "➕ Добавить скамера" and can_manage_chat(user.id, 0):
-            await update.message.reply_text("Используйте команду: /add_scammer @username причина_скама")
-        elif text == "➖ Удалить скамера" and is_global_admin(user.id):
-            await update.message.reply_text("Используйте команду: /del_scammer @username")
-        elif text == "📊 Статистика" and can_manage_chat(user.id, 0):
-            try:
-                thread_id = threading.get_ident()
-                conn = db.get_connection(thread_id)
-                cursor = conn.cursor()
-                
-                cursor.execute("SELECT COUNT(*) FROM scammers")
-                scammer_count = cursor.fetchone()[0] or 0
-                
-                cursor.execute("SELECT COUNT(*) FROM garants")
-                garant_count = cursor.fetchone()[0] or 0
-                
-                cursor.execute("SELECT COUNT(*) FROM search_history")
-                search_count = cursor.fetchone()[0] or 0
-                
-                cursor.execute("SELECT COUNT(*) FROM chat_admins")
-                chat_admins_count = cursor.fetchone()[0] or 0
-                
-                cursor.execute("SELECT SUM(added_scammers) FROM admin_stats")
-                total_added_scammers = cursor.fetchone()[0] or 0
-                
-                stats_text = (
-                    f"📊 Статистика бота v6.0:\n\n"
-                    f"🚨 Скамеров в базе: {scammer_count}\n"
-                    f"⭐ Гарантов в базе: {garant_count}\n"
-                    f"🔍 Всего проверок: {search_count}\n"
-                    f"👥 Администраторов чатов: {chat_admins_count}\n"
-                    f"📈 Всего добавлено скамеров: {total_added_scammers}\n\n"
-                    f"👑 Глобальный админ ID: {ADMIN_ID}\n"
-                    f"🌐 Хост: Render.com\n"
-                    f"📡 Запросов к API: {bot_status['total_requests']}\n"
-                    f"🔄 Версия: 6.0 (полное управление ролями)"
-                )
-                await update.message.reply_text(stats_text, reply_markup=get_admin_reply_keyboard())
-            except Exception as e:
-                logger.error(f"Ошибка при получении статистики: {e}")
-                await update.message.reply_text("❌ Ошибка при получении статистики", reply_markup=get_admin_reply_keyboard())
-        elif text == "⬅️ На главную":
-            await update.message.reply_text(
-                "Главное меню:",
-                reply_markup=get_main_reply_keyboard(user.id, chat_type)
-            )
-        else:
-            await update.message.reply_text(
-                "Используйте кнопки ниже:",
-                reply_markup=get_main_reply_keyboard(user.id, chat_type)
-            )
-    except Exception as e:
-        logger.error(f"Ошибка в handle_text_message: {e}")
-
-# ========== ОСНОВНАЯ ФУНКЦИЯ ==========
-def main():
-    """Запуск системы"""
-    try:
-        print("🚀 Запуск Anti-Scam Bot v6.0 с полным управлением ролями...")
-        
-        # Инициализируем базу данных
-        init_database()
-        
-        # Запускаем веб-сервер в отдельном потоке
-        web_thread = threading.Thread(target=run_web_server, daemon=True)
-        web_thread.start()
-        
-        print("🌐 Веб-сервер запущен")
-        print(f"👑 Глобальный админ ID: {ADMIN_ID}")
-        
-        time.sleep(2)
-        
-        # Создаем приложение Telegram бота
-        print("🤖 Инициализация Telegram бота...")
-        application = Application.builder().token(TOKEN).build()
-        
-        # Основные команды
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("check", check_command))
-        application.add_handler(CommandHandler("me", me_command))
-        application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("status", bot_status_command))
-        application.add_handler(CommandHandler("garants", list_garants_command))
-        
-        # Команды администраторов
-        application.add_handler(CommandHandler("add_scammer", add_scammer_command))
-        application.add_handler(CommandHandler("del_scammer", del_scammer_command))
-        application.add_handler(CommandHandler("add_garant", add_garant_command))
-        application.add_handler(CommandHandler("del_garant", del_garant_command))
-        
-        # Команды для управления чатами
-        application.add_handler(CommandHandler("add_admin", add_admin_command))
-        application.add_handler(CommandHandler("del_admin", del_admin_command))
-        application.add_handler(CommandHandler("list_admins", list_admins_command))
-        
-        # Дополнительные команды для админа
-        application.add_handler(CommandHandler("broadcast", broadcast_command))
-        
-        # Обработчики текстовых сообщений (ВАЖНО: добавляется ПОСЛЕ всех команд!)
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
-        
-        print("\n" + "="*50)
-        print("✅ СИСТЕМА ЗАПУЩЕНА УСПЕШНО!")
-        print("="*50)
-        print("\n📱 ОТПРАВЬТЕ /start В TELEGRAM")
-        print("\n🌟 ОСНОВНЫЕ ВОЗМОЖНОСТИ v6.0:")
-        print("1. Полное управление ролями пользователей")
-        print("2. Фото профиля для каждой роли")
-        print("3. Показ роли при нажатии 'Мой профиль'")
-        print("4. Причины добавления скамеров")
-        print("5. Статистика администраторов")
-        print("\n👑 КОМАНДЫ ДЛЯ АДМИНИСТРАТОРОВ:")
-        print("• /add_scammer @username причина - добавить скамера")
-        print("• /del_scammer @username - удалить скамера")
-        print("• /add_garant @username - добавить гаранта")
-        print("• /del_garant @username - удалить гаранта")
-        print("• /add_admin @username - добавить администратора чата")
-        print("• /garants - список гарантов с пруфами")
-        print("\n🔧 ИСПРАВЛЕННЫЕ ПРОБЛЕМЫ:")
-        print("• Исправлено: показывается правильный username в профиле")
-        print("• Исправлено: ошибка 'database is locked' при добавлении скамеров")
-        print("• Улучшено: безопасная работа с SQLite в многопоточной среде")
-        
-        # Запускаем polling
-        application.run_polling(
-            drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES
-        )
-        
-    except Exception as e:
-        print(f"🔴 Критическая ошибка: {e}")
-        import traceback
-        traceback.print_exc()
+        bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)}")
     finally:
-        # Закрываем все соединения с базой данных
-        db.close_all()
+        conn.close()
+
+@bot.message_handler(commands=['add_admin'])
+def add_admin_command(message):
+    if message.from_user.id != ADMIN_ID:
+        bot.send_message(message.chat.id, "❌ Только владелец бота может добавлять администраторов.")
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        bot.send_message(message.chat.id, "Использование: /add_admin @username")
+        return
+    
+    username = args[1][1:] if args[1].startswith('@') else args[1]
+    
+    # Получаем ID пользователя (упрощенная версия)
+    user_id = hash(username) % 1000000
+    
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute('INSERT OR IGNORE INTO admins (user_id, username, added_by) VALUES (?, ?, ?)', 
+                      (user_id, username, message.from_user.id))
+        
+        conn.commit()
+        bot.send_message(message.chat.id, f"✅ Администратор @{username} добавлен.")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)}")
+    finally:
+        conn.close()
+
+# Просмотр ID фото (только для админов)
+@bot.message_handler(content_types=['photo'])
+def get_photo_id(message):
+    if is_admin(message.from_user.id):
+        photo_id = message.photo[-1].file_id
+        bot.send_message(message.chat.id, f"🖼 ID фото: {photo_id}")
+    else:
+        # Игнорируем фото от обычных пользователей
+        pass
+
+# Обработчик инлайн кнопок
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callback(call):
+    if call.data.startswith('like_'):
+        user_id = call.data.split('_')[1]
+        bot.answer_callback_query(call.id, "❤️ Ваш голос учтен!")
+        
+    elif call.data.startswith('dislike_'):
+        user_id = call.data.split('_')[1]
+        bot.answer_callback_query(call.id, "💔 Ваш голос учтен!")
+
+# Flask маршруты для вебхука
+@app.route('/')
+def index():
+    return 'Bot is running!'
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return ''
+    else:
+        return 'Bad request', 400
+
+# Запуск вебхука
+def set_webhook():
+    time.sleep(1)
+    bot.remove_webhook()
+    time.sleep(1)
+    bot.set_webhook(url=WEBHOOK_URL + '/webhook')
+    logger.info("Webhook set to: " + WEBHOOK_URL + '/webhook')
 
 if __name__ == '__main__':
-    main()
+    # Запускаем установку вебхука в отдельном потоке
+    threading.Thread(target=set_webhook).start()
+    
+    # Запускаем Flask сервер
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
