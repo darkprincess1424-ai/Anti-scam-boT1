@@ -5,6 +5,7 @@ import sqlite3
 import logging
 from datetime import datetime
 import threading
+import time
 
 # Настройка логирования
 logging.basicConfig(
@@ -133,6 +134,22 @@ def is_admin(user_id):
     result = cursor.fetchone() is not None
     conn.close()
     return result
+
+def check_admin_permission(user_id):
+    """Проверка прав администратора с детальной информацией"""
+    if user_id == ADMIN_ID:
+        return {'is_admin': True, 'level': 'owner', 'username': 'Владелец'}
+    
+    conn = sqlite3.connect('bot_database.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('SELECT username FROM admins WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    
+    if result:
+        return {'is_admin': True, 'level': 'admin', 'username': result[0]}
+    
+    return {'is_admin': False, 'level': 'user'}
 
 # Клавиатуры
 def get_main_keyboard():
@@ -364,19 +381,43 @@ def list_garants_command(message):
 # Обработчик кнопки "📋 Команды"
 @bot.message_handler(func=lambda message: message.text == '📋 Команды')
 def commands_command(message):
+    # Проверяем права пользователя
+    admin_info = check_admin_permission(message.from_user.id)
+    
     commands_text = """
 🤖 <b>Доступные команды:</b>
 
+🔍 <b>Проверка пользователей:</b>
 /start - Начать работу с ботом
 /check @username - Проверить пользователя
 /check me - Проверить себя
 /check (в ответ на сообщение) - Проверить пользователя
-
+    """
+    
+    # Добавляем административные команды если пользователь админ
+    if admin_info['is_admin']:
+        commands_text += """
+        
+🔐 <b>Административные команды:</b>
+/add_scammer - Добавить скамера
+/my_rights - Проверить свои права
+        """
+        
+        if admin_info['level'] == 'owner':
+            commands_text += """
+/add_admin - Добавить администратора (только владелец)
+/del_admin - Удалить администратора (только владелец)
+/admins - Список администраторов
+            """
+    
+    commands_text += """
+    
 📝 <b>Кнопки:</b>
 👤 Мой профиль - Посмотреть свой профиль
 ⭐ Список гарантов - Список проверенных гарантов
 ℹ️ Информация - Информация о боте
-"""
+    """
+    
     bot.send_message(message.chat.id, commands_text, parse_mode='HTML')
 
 # Обработчик кнопки "ℹ️ Информация"
@@ -451,7 +492,6 @@ def check_command(message):
             current_time = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
             
             # Имитация проверки
-            import time
             time.sleep(1)
             
             # Удаляем сообщение "Проверяю..."
@@ -560,42 +600,382 @@ def handle_callback(call):
     except Exception as e:
         logger.error(f"Ошибка в callback: {e}")
 
-# Административные команды
+# ============== АДМИНИСТРАТИВНЫЕ КОМАНДЫ ==============
+
+# Команда для добавления скамера (для администраторов)
 @bot.message_handler(commands=['add_scammer'])
 def add_scammer_command(message):
-    if not is_admin(message.from_user.id):
-        bot.send_message(message.chat.id, "❌ У вас нет прав для выполнения этой команды.")
-        return
-    
-    args = message.text.split(maxsplit=3)
-    if len(args) < 4:
-        bot.send_message(message.chat.id, "Использование: /add_scammer @username причина пруфы")
-        return
-    
-    username = args[1][1:] if args[1].startswith('@') else args[1]
-    reason = args[2]
-    proofs = args[3] if len(args) > 3 else "Не указаны"
-    
     try:
+        # Проверяем права администратора
+        if not is_admin(message.from_user.id):
+            bot.send_message(message.chat.id, "❌ У вас нет прав для выполнения этой команды.")
+            return
+        
+        args = message.text.split(maxsplit=3)
+        
+        if len(args) < 4 and not message.reply_to_message:
+            bot.send_message(message.chat.id, 
+                            "❌ Использование: /add_scammer @username причина пруфы\n"
+                            "Пример: /add_scammer @scammer123 Обман в сделке https://proofs.com\n\n"
+                            "Или ответьте на сообщение пользователя с командой и причиной:\n"
+                            "/add_scammer причина пруфы")
+            return
+        
+        user_to_add = None
+        reason = ""
+        proofs = ""
+        
+        if message.reply_to_message:
+            # Добавление в ответ на сообщение
+            user_to_add = message.reply_to_message.from_user
+            if len(args) >= 3:
+                reason = args[1]
+                proofs = args[2] if len(args) > 2 else "Не указаны"
+            else:
+                bot.send_message(message.chat.id, 
+                               "❌ Укажите причину и пруфы после команды.\n"
+                               "Пример: /add_scammer причина пруфы (в ответ на сообщение)")
+                return
+        else:
+            # Обычное добавление
+            if args[1].startswith('@'):
+                username = args[1][1:]
+                # Пытаемся получить пользователя по username
+                user_to_add = None  # В реальном боте нужно получить user_id по username
+                temp_user_id = abs(hash(username)) % 1000000  # Временное решение
+            else:
+                # Это может быть user_id
+                if args[1].isdigit():
+                    temp_user_id = int(args[1])
+                    username = f"user_{temp_user_id}"
+                else:
+                    bot.send_message(message.chat.id, "❌ Укажите @username или user_id.")
+                    return
+            
+            reason = args[2]
+            proofs = args[3] if len(args) > 3 else "Не указаны"
+        
+        if user_to_add:
+            user_id = user_to_add.id
+            username = user_to_add.username or f"user_{user_id}"
+        else:
+            user_id = temp_user_id
+        
+        # Проверяем, не добавлен ли уже как скамер
         conn = sqlite3.connect('bot_database.db', check_same_thread=False)
         cursor = conn.cursor()
         
-        # Генерируем временный user_id (в реальном боте нужно получать ID пользователя)
-        temp_user_id = abs(hash(username)) % 1000000
+        cursor.execute('SELECT * FROM scammers WHERE user_id = ?', (user_id,))
+        if cursor.fetchone():
+            bot.send_message(message.chat.id, f"⚠️ Пользователь @{username} уже в списке скамеров.")
+            conn.close()
+            return
         
+        # Добавляем скамера в базу
         cursor.execute('''
-            INSERT OR REPLACE INTO scammers (user_id, username, reason, proofs, added_by)
+            INSERT INTO scammers (user_id, username, reason, proofs, added_by)
             VALUES (?, ?, ?, ?, ?)
-        ''', (temp_user_id, username, reason, proofs, message.from_user.id))
+        ''', (user_id, username, reason, proofs, message.from_user.id))
         
         conn.commit()
+        
+        # Получаем информацию об администраторе
+        cursor.execute('SELECT username FROM admins WHERE user_id = ?', (message.from_user.id,))
+        admin_info = cursor.fetchone()
+        admin_name = admin_info[0] if admin_info else f"user_{message.from_user.id}"
+        
         conn.close()
         
-        bot.send_message(message.chat.id, f"✅ Скамер @{username} добавлен в базу.")
+        response = f"""
+🔴 <b>СКАМЕР ДОБАВЛЕН В БАЗУ</b>
+
+👤 Пользователь: @{username}
+🆔 ID: {user_id}
+📌 Причина: {reason}
+🔗 Пруфы: {proofs}
+👮 Добавил: @{admin_name}
+🕒 Время: {datetime.now().strftime("%d.%m.%Y %H:%M:%S")}
+
+✅ Пользователь добавлен в черный список.
+        """
+        
+        bot.send_message(message.chat.id, response, parse_mode='HTML')
         
     except Exception as e:
-        logger.error(f"Ошибка добавления скамера: {e}")
+        logger.error(f"Ошибка в add_scammer_command: {e}")
         bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)}")
+
+# Команда для добавления администратора (только для владельца)
+@bot.message_handler(commands=['add_admin'])
+def add_admin_command(message):
+    try:
+        # Проверяем, что команду отправляет владелец
+        if message.from_user.id != ADMIN_ID:
+            bot.send_message(message.chat.id, "❌ Только владелец бота может добавлять администраторов.")
+            return
+        
+        args = message.text.split()
+        if len(args) < 2:
+            bot.send_message(message.chat.id, 
+                            "❌ Использование: /add_admin @username\n"
+                            "Или: /add_admin user_id\n"
+                            "Или ответьте на сообщение пользователя")
+            return
+        
+        target = args[1]
+        
+        # Проверяем, указан ли user_id или username
+        if target.isdigit():
+            # Это user_id
+            user_id = int(target)
+            username = f"user_{user_id}"
+            
+            # Пробуем получить информацию о пользователе
+            try:
+                chat_member = bot.get_chat_member(user_id, user_id)
+                username = chat_member.user.username or f"user_{user_id}"
+            except:
+                username = f"user_{user_id}"
+                
+        elif target.startswith('@'):
+            # Это username
+            username = target[1:]
+            user_id = None
+            
+            bot.send_message(message.chat.id, 
+                           f"⚠️ Для добавления по username нужен user_id.\n"
+                           f"Попросите пользователя написать боту /start,\n"
+                           f"а затем используйте /add_admin user_id\n"
+                           f"или добавьте в ответ на его сообщение.")
+            return
+            
+        elif message.reply_to_message:
+            # Добавление в ответ на сообщение
+            user_to_add = message.reply_to_message.from_user
+            user_id = user_to_add.id
+            username = user_to_add.username or f"user_{user_id}"
+            
+        else:
+            bot.send_message(message.chat.id, 
+                           "❌ Укажите user_id или username, либо ответьте на сообщение пользователя.")
+            return
+        
+        if user_id:
+            # Добавляем администратора в базу
+            conn = sqlite3.connect('bot_database.db', check_same_thread=False)
+            cursor = conn.cursor()
+            
+            # Проверяем, не является ли уже администратором
+            cursor.execute('SELECT * FROM admins WHERE user_id = ?', (user_id,))
+            if cursor.fetchone():
+                bot.send_message(message.chat.id, f"⚠️ Пользователь @{username} уже является администратором.")
+            else:
+                cursor.execute('INSERT INTO admins (user_id, username, added_by) VALUES (?, ?, ?)', 
+                             (user_id, username, message.from_user.id))
+                conn.commit()
+                
+                # Получаем информацию о том, кто добавил
+                cursor.execute('SELECT username FROM admins WHERE user_id = ?', (message.from_user.id,))
+                added_by_info = cursor.fetchone()
+                added_by_name = added_by_info[0] if added_by_info else "владелец"
+                
+                response = f"""
+✅ <b>АДМИНИСТРАТОР ДОБАВЛЕН</b>
+
+👤 Пользователь: @{username}
+🆔 ID: {user_id}
+👑 Статус: Администратор
+👮 Добавил: @{added_by_name}
+🕒 Время: {datetime.now().strftime("%d.%m.%Y %H:%M:%S")}
+
+📋 <b>Доступные права:</b>
+• Добавление скамеров (/add_scammer)
+• Просмотр ID фото
+• Доступ к административным командам
+                """
+                
+                bot.send_message(message.chat.id, response, parse_mode='HTML')
+            
+            conn.close()
+        else:
+            bot.send_message(message.chat.id, "❌ Не удалось определить user_id пользователя.")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в add_admin_command: {e}")
+        bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)}")
+
+# Команда для просмотра списка администраторов
+@bot.message_handler(commands=['admins'])
+def list_admins_command(message):
+    try:
+        if not is_admin(message.from_user.id):
+            bot.send_message(message.chat.id, "❌ У вас нет прав для просмотра списка администраторов.")
+            return
+        
+        conn = sqlite3.connect('bot_database.db', check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute('SELECT user_id, username, added_by, added_at FROM admins ORDER BY added_at DESC')
+        admins = cursor.fetchall()
+        conn.close()
+        
+        if not admins:
+            bot.send_message(message.chat.id, "📭 Список администраторов пуст.")
+            return
+        
+        response = "👑 <b>Список администраторов:</b>\n\n"
+        
+        for i, (admin_id, username, added_by, added_at) in enumerate(admins, 1):
+            # Получаем информацию о том, кто добавил
+            conn = sqlite3.connect('bot_database.db', check_same_thread=False)
+            cursor_added = conn.cursor()
+            cursor_added.execute('SELECT username FROM admins WHERE user_id = ?', (added_by,))
+            added_by_info = cursor_added.fetchone()
+            conn.close()
+            
+            added_by_name = added_by_info[0] if added_by_info else str(added_by)
+            
+            status = "👑 Владелец" if admin_id == ADMIN_ID else "⚡ Админ"
+            
+            response += f"{i}. @{username}\n"
+            response += f"   🆔 ID: {admin_id}\n"
+            response += f"   📛 Статус: {status}\n"
+            response += f"   📅 Добавлен: {added_at[:10]}\n"
+            response += f"   👤 Добавил: @{added_by_name}\n\n"
+        
+        bot.send_message(message.chat.id, response, parse_mode='HTML')
+        
+    except Exception as e:
+        logger.error(f"Ошибка в list_admins_command: {e}")
+        bot.send_message(message.chat.id, "❌ Ошибка при загрузке списка администраторов")
+
+# Команда для удаления администратора (только для владельца)
+@bot.message_handler(commands=['del_admin'])
+def delete_admin_command(message):
+    try:
+        # Проверяем, что команду отправляет владелец
+        if message.from_user.id != ADMIN_ID:
+            bot.send_message(message.chat.id, "❌ Только владелец бота может удалять администраторов.")
+            return
+        
+        args = message.text.split()
+        if len(args) < 2:
+            bot.send_message(message.chat.id, 
+                            "❌ Использование: /del_admin @username\n"
+                            "Или: /del_admin user_id\n"
+                            "Или ответьте на сообщение администратора.")
+            return
+        
+        target = args[1]
+        
+        if target.isdigit():
+            user_id = int(target)
+        elif target.startswith('@'):
+            username = target[1:]
+            conn = sqlite3.connect('bot_database.db', check_same_thread=False)
+            cursor = conn.cursor()
+            cursor.execute('SELECT user_id FROM admins WHERE username = ?', (username,))
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                user_id = result[0]
+            else:
+                bot.send_message(message.chat.id, f"❌ Администратор @{username} не найден.")
+                return
+        elif message.reply_to_message:
+            user_id = message.reply_to_message.from_user.id
+        else:
+            bot.send_message(message.chat.id, "❌ Укажите user_id или username.")
+            return
+        
+        # Нельзя удалить владельца
+        if user_id == ADMIN_ID:
+            bot.send_message(message.chat.id, "❌ Нельзя удалить владельца бота.")
+            return
+        
+        # Удаляем администратора
+        conn = sqlite3.connect('bot_database.db', check_same_thread=False)
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT username FROM admins WHERE user_id = ?', (user_id,))
+        admin_info = cursor.fetchone()
+        
+        if admin_info:
+            username = admin_info[0]
+            cursor.execute('DELETE FROM admins WHERE user_id = ?', (user_id,))
+            conn.commit()
+            
+            response = f"""
+🗑️ <b>АДМИНИСТРАТОР УДАЛЕН</b>
+
+👤 Пользователь: @{username}
+🆔 ID: {user_id}
+👮 Удалил: @{message.from_user.username or 'владелец'}
+🕒 Время: {datetime.now().strftime("%d.%m.%Y %H:%M:%S")}
+
+✅ Администратор удален из системы.
+            """
+            
+            bot.send_message(message.chat.id, response, parse_mode='HTML')
+        else:
+            bot.send_message(message.chat.id, "❌ Администратор не найден.")
+        
+        conn.close()
+        
+    except Exception as e:
+        logger.error(f"Ошибка в delete_admin_command: {e}")
+        bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)}")
+
+# Команда для проверки своих прав
+@bot.message_handler(commands=['my_rights'])
+def my_rights_command(message):
+    try:
+        user_id = message.from_user.id
+        admin_info = check_admin_permission(user_id)
+        
+        if admin_info['is_admin']:
+            if admin_info['level'] == 'owner':
+                role_text = "👑 Владелец бота"
+                permissions = "• Полный доступ ко всем командам\n• Добавление/удаление администраторов\n• Добавление скамеров\n• Управление базой данных"
+            else:
+                role_text = "⚡ Администратор"
+                permissions = "• Добавление скамеров\n• Управление базой данных скамеров\n• Просмотр административной информации"
+            
+            response = f"""
+🔐 <b>ВАШИ ПРАВА:</b>
+
+{role_text}
+👤 Имя: @{message.from_user.username or 'Нет username'}
+🆔 ID: {user_id}
+
+📋 <b>Доступные команды:</b>
+{permissions}
+
+📝 <b>Административные команды:</b>
+/add_scammer - Добавить скамера
+/admins - Список администраторов
+/my_rights - Проверить свои права
+            """
+        else:
+            response = f"""
+🔐 <b>ВАШИ ПРАВА:</b>
+
+👤 Обычный пользователь
+🆔 ID: {user_id}
+
+📋 <b>Доступные команды:</b>
+• Проверка пользователей (/check)
+• Просмотр профиля
+• Список гарантов
+
+❌ <b>Административные команды недоступны</b>
+            """
+        
+        bot.send_message(message.chat.id, response, parse_mode='HTML')
+        
+    except Exception as e:
+        logger.error(f"Ошибка в my_rights_command: {e}")
+        bot.send_message(message.chat.id, "❌ Ошибка при проверке прав")
 
 # Запуск бота
 def run_bot():
