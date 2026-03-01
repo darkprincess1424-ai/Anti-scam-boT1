@@ -1,10 +1,7 @@
 services:
-  - type: web
-    name: anti-scam-bot
-    env: python
+  - type: worker
+    name: telegram-bot
+    runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bot:app
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.0
-    healthCheckPath: /health
+    startCommand: python bot.py
+    autoDeploy: true
